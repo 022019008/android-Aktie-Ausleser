@@ -1,0 +1,1 @@
+# android-Aktie-Ausleser
