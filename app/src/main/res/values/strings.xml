@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">Ausleser</string>
+
+    <!-- 主页 -->
+    <string name="selber_select">自选</string>
+
+    <!-- 自选分组管理 -->
+    <string name="group_manage">设置</string>
+    <string name="manage_groups_title">管理自选分组</string>
+    <string name="add_group">添加分组</string>
+    <string name="edit_group">编辑分组</string>
+    <string name="group_name_hint">分组名称</string>
+    <string name="group_name_empty">分组名称不能为空</string>
+    <string name="confirm_delete">确定删除分组“%1$s”？</string>
+    <string name="action_ok">确定</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_delete">删除</string>
+    <string name="action_sync">同步</string>
+
+    <!-- 自选股票列表 / 搜索添加 -->
+    <string name="add_stock_action">添加自选</string>
+    <string name="action_close">关闭</string>
+    <string name="empty_stocks">暂无自选，点击右上角 + 添加</string>
+    <string name="quote_placeholder">--</string>
+    <string name="search_stock_hint">代码 / 名称 / 拼音首字母</string>
+    <string name="search_sub_format">%1$s　%2$s</string>
+    <string name="already_added">已添加</string>
+    <string name="stock_added">已添加：%1$s</string>
+    <string name="stock_exists">该股票已在本分组</string>
+    <string name="no_search_result">无匹配股票</string>
+</resources>
