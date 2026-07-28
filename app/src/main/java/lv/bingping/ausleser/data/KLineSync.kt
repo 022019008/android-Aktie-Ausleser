@@ -1,5 +1,6 @@
 package lv.bingping.ausleser.data
 
+import android.content.Context
 import lv.bingping.ausleser.util.AppLog
 import java.io.IOException
 import java.time.Instant
@@ -10,14 +11,17 @@ import kotlin.math.abs
  * 个股 K 线同步编排：打开 K 线页时在后台线程调用 [syncStock]，
  * 使本地 t_k_5m / t_k_30m / t_k_day 保持最新，入库一律前复权（adjust=[ADJUST_QFQ]）。
  *
+ * 数据来源为自建数据源 Aktie_datasource（[DatasourceApi]，freq=5m/30m/day），
+ * 服务端存储窗口：5m 半年、30m 两年、日线五年；App 请求条数超过服务端
+ * 上限时由服务端自动截断，能拿多少算多少。
+ *
  * 每张表独立执行以下策略（单表失败不阻断其余表）：
  *  1. 空表，或存在非前复权行（种子库 bfq 遗留）→ 清掉该股全部行 → 按首次量级全量拉取入库；
- *     首次量级目标：5m/30m 两年、日线五年；其中分钟级受数据源深度限制
- *     （东财 klt=5/30 服务端仅约 1–2 个月，实测 5m≈2100 根、30m≈250 根），能拿多少算多少；
+ *     请求量级超过服务端存储窗口时由服务端截断，能拿多少算多少；
  *  2. 否则拉尾部增量（至少带 [OVERLAP_5M] 等重叠根数）：
  *     重叠已完成 bar 收盘价一致 → 仅 upsert 拉到的新数据；
  *     价格被重算（除权除息，前复权基准变化）→ 清掉该股该表全部行 → 全量重拉入库；
- *  3. 三个周期均各自从网络直接拉取（30m 走东财 klt=30，不再由 5m 聚合）。
+ *  3. 三个周期均各自从数据源直接拉取（30m 为服务端 freq=30m，不由 5m 聚合）。
  *
  * 仅当三个周期的网络拉取**全部**失败时向外抛 [IOException]；
  * 调用方（KLineActivity）提示用户后仍应展示本地已有数据。
@@ -34,6 +38,11 @@ object KLineSync {
     const val FIRST_30M = 4_000
     const val FIRST_DAY = 1_300
 
+    /** 数据源频率参数（Aktie_datasource /api/kline 的 freq 取值）。 */
+    private const val FREQ_5M = "5m"
+    private const val FREQ_30M = "30m"
+    private const val FREQ_DAY = "day"
+
     /** 每交易日 bar 数（5m：9:30-11:30 与 13:00-15:00 共 48 根；30m：8 根）。 */
     private const val BARS_PER_DAY_5M = 48
     private const val BARS_PER_DAY_30M = 8
@@ -49,9 +58,10 @@ object KLineSync {
     /**
      * 同步一只股票的 K 线（阻塞式，必须在后台线程调用）。
      *
+     * @param context 用于读取服务器配置（[Settings]）与拼装请求地址
      * @throws IOException 三个周期的网络拉取全部失败（本地未新增任何数据）
      */
-    fun syncStock(db: DbHelper, code: String) {
+    fun syncStock(context: Context, db: DbHelper, code: String) {
         val start = android.os.SystemClock.elapsedRealtime()
         val nowSec = System.currentTimeMillis() / 1000
         AppLog.net("同步开始: code=$code")
@@ -59,7 +69,7 @@ object KLineSync {
 
         try {
             syncTable(db, DbHelper.TABLE_K_5M, code, nowSec, BARS_PER_DAY_5M, OVERLAP_5M, FIRST_5M) {
-                EastMoneyKlineApi.fetch5m(code, it)
+                DatasourceApi.fetchKline(context, code, FREQ_5M, it)
             }
         } catch (e: IOException) {
             failures++
@@ -68,7 +78,7 @@ object KLineSync {
 
         try {
             syncTable(db, DbHelper.TABLE_K_30M, code, nowSec, BARS_PER_DAY_30M, OVERLAP_30M, FIRST_30M) {
-                EastMoneyKlineApi.fetch30m(code, it)
+                DatasourceApi.fetchKline(context, code, FREQ_30M, it)
             }
         } catch (e: IOException) {
             failures++
@@ -77,7 +87,7 @@ object KLineSync {
 
         try {
             syncTable(db, DbHelper.TABLE_K_DAY, code, nowSec, 1, OVERLAP_DAY, FIRST_DAY) {
-                EastMoneyKlineApi.fetchDay(code, it)
+                DatasourceApi.fetchKline(context, code, FREQ_DAY, it)
             }
         } catch (e: IOException) {
             failures++
@@ -177,7 +187,7 @@ object KLineSync {
      *
      * 跳过本次拉取的最新一根（可能仍在盘中变动）与不早于库存最新时刻的 bar
      * （库存最新一根当初写入时也可能未收盘）；只比价格不比成交量/额
-     * （东财/腾讯两源量纲可能不同，避免误报）。
+     * （不同数据来源量纲可能不同，避免误报）。
      */
     fun detectAdjustChange(stored: List<KBar>, fetched: List<KBar>): Boolean {
         if (stored.isEmpty() || fetched.isEmpty()) return false

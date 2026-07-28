@@ -34,7 +34,7 @@ import java.util.concurrent.Executors
  * 同步失败仅提示，仍展示本地已有数据；同一页面生命周期内只同步一次。
  *
  * 数据源（同步后全部读库）：
- *  - 5分钟：库表 t_k_5m；30分钟：库表 t_k_30m（东财 klt=30 网络直接拉取）；
+ *  - 5分钟：库表 t_k_5m；30分钟：库表 t_k_30m（均由自建数据源 Aktie_datasource 网络拉取）；
  *  - 日线：库表 t_k_day；周线：由日线内存聚合（[KLineSynth.toWeekly]）。
  *
  * 默认可见条数按屏幕方向：竖屏 [KLineChartView.DEFAULT_PORTRAIT_COUNT] 根，
@@ -155,7 +155,7 @@ class KLineActivity : AppCompatActivity() {
         if (synced) return
         synced = true
         try {
-            KLineSync.syncStock(dbHelper, code)
+            KLineSync.syncStock(applicationContext, dbHelper, code)
         } catch (e: IOException) {
             AppLog.netError("K线同步失败，回落本地数据: code=$code", e)
             mainHandler.post {

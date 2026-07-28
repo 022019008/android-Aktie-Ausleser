@@ -10,7 +10,7 @@ import android.util.Log
  *
  * 过滤示例：`adb logcat -s AusleserDb:* AusleserNet:*`
  *
- * 网络日志覆盖 K 线同步（EastMoneyKlineApi / KLineSync）的请求、响应与失败；
+ * 网络日志覆盖 K 线同步（DatasourceApi / KLineSync）的请求、响应与失败；
  * 搜索数据源接入后同样统一经 [net] / [netError] 输出。
  */
 object AppLog {
