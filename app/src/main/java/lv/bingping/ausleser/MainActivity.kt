@@ -16,6 +16,7 @@ import lv.bingping.ausleser.ui.AddStockBottomSheet
 import lv.bingping.ausleser.ui.GroupManageBottomSheet
 import lv.bingping.ausleser.ui.StockListAdapter
 import lv.bingping.ausleser.ui.SwipeRevealCallback
+import lv.bingping.ausleser.util.AppLog
 
 /**
  * 主页。
@@ -50,6 +51,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // 首次启动时安装 assets 预置种子库（未打包种子库时为空操作，回退空库新建）
+        DbHelper.installIfNeeded(this)
         dbHelper = DbHelper(this)
 
         btnSelberSelect = findViewById(R.id.btn_selber_select)
@@ -64,8 +67,11 @@ class MainActivity : AppCompatActivity() {
 
         stockAdapter = StockListAdapter(
             onDelete = { stock -> removeStock(stock) },
-            // 同步按钮点击功能待定，先占位不做事
-            onSync = { stock -> }
+            // 同步按钮点击功能待定，先占位不做事（行情数据源接入前仅记录网络日志）
+            onSync = { stock ->
+                AppLog.net("点击同步（占位，未接入行情数据源）: code=${stock.code}, name=${stock.name}")
+            },
+            onClick = { stock -> openKLine(stock) }
         )
         rvStocks.layoutManager = LinearLayoutManager(this)
         rvStocks.adapter = stockAdapter
@@ -164,6 +170,11 @@ class MainActivity : AppCompatActivity() {
     private fun removeStock(stock: lv.bingping.ausleser.data.SelectStock) {
         dbHelper.deleteStock(stock.id)
         reloadStocks()
+    }
+
+    /** 打开指定股票的 K 线图页面。 */
+    private fun openKLine(stock: lv.bingping.ausleser.data.SelectStock) {
+        startActivity(KLineActivity.intent(this, stock.code, stock.name))
     }
 
     override fun onDestroy() {

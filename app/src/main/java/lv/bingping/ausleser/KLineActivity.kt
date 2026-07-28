@@ -1,0 +1,224 @@
+package lv.bingping.ausleser
+
+import android.content.Intent
+import android.content.res.ColorStateList
+import android.content.res.Configuration
+import android.graphics.Color
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.view.View
+import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.Spinner
+import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AppCompatActivity
+import com.google.android.material.appbar.MaterialToolbar
+import lv.bingping.ausleser.data.DbHelper
+import lv.bingping.ausleser.data.KBar
+import lv.bingping.ausleser.data.KLineSync
+import lv.bingping.ausleser.data.KLineSynth
+import lv.bingping.ausleser.ui.KLineChartView
+import lv.bingping.ausleser.util.AppLog
+import java.io.IOException
+import java.util.concurrent.Executors
+
+/**
+ * K 线图页面：展示某只股票的 K 线，右上角下拉切换周期
+ * （5分钟 / 30分钟 / 日线 / 周线），默认日线。
+ *
+ * 进入页面先经 [KLineSync.syncStock] 在后台同步该股 K 线（前复权入库，
+ * 首次下载 5m/30m 两年、日线五年，其后增量补尾、除权除息时自动重建），
+ * 同步失败仅提示，仍展示本地已有数据；同一页面生命周期内只同步一次。
+ *
+ * 数据源（同步后全部读库）：
+ *  - 5分钟：库表 t_k_5m；30分钟：库表 t_k_30m（东财 klt=30 网络直接拉取）；
+ *  - 日线：库表 t_k_day；周线：由日线内存聚合（[KLineSynth.toWeekly]）。
+ *
+ * 默认可见条数按屏幕方向：竖屏 [KLineChartView.DEFAULT_PORTRAIT_COUNT] 根，
+ * 横屏 [KLineChartView.DEFAULT_LANDSCAPE_COUNT] 根；旋转后恢复周期与视窗位置。
+ */
+class KLineActivity : AppCompatActivity() {
+
+    private lateinit var dbHelper: DbHelper
+    private lateinit var chart: KLineChartView
+    private lateinit var emptyView: TextView
+
+    private val executor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** 加载序号，切换周期时丢弃过期结果。 */
+    private var loadSeq = 0
+
+    private var code = ""
+    private var name = ""
+
+    /** 当前周期下标（对应 R.array.kline_periods），默认日线。 */
+    private var periodIndex = PERIOD_DAY
+
+    /** 本页生命周期内是否已同步过（旋转后经 savedInstanceState 保留，避免重复拉取）。 */
+    private var synced = false
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContentView(R.layout.activity_kline)
+
+        code = intent.getStringExtra(EXTRA_CODE).orEmpty()
+        name = intent.getStringExtra(EXTRA_NAME).orEmpty()
+
+        val toolbar = findViewById<MaterialToolbar>(R.id.kline_toolbar)
+        toolbar.title = name
+        toolbar.subtitle = code
+        toolbar.setNavigationOnClickListener { finish() }
+
+        chart = findViewById(R.id.kline_chart)
+        emptyView = findViewById(R.id.tv_kline_empty)
+
+        dbHelper = DbHelper(this)
+
+        // 恢复旋转前的周期、视窗与同步状态
+        var restoredCount: Float? = null
+        var restoredAnchor: Long? = null
+        savedInstanceState?.let { s ->
+            periodIndex = s.getInt(KEY_PERIOD, PERIOD_DAY)
+            restoredCount = s.getFloat(KEY_COUNT, 0f).takeIf { it > 0f }
+            restoredAnchor = s.getLong(KEY_ANCHOR, -1L).takeIf { it > 0L }
+            synced = s.getBoolean(KEY_SYNCED, false)
+        }
+
+        setupPeriodSpinner(toolbar)
+        reload(anchorTs = restoredAnchor, count = restoredCount)
+    }
+
+    /** 右上角周期下拉；选中与当前一致时跳过（也挡掉首次布局的自动回调）。 */
+    private fun setupPeriodSpinner(toolbar: MaterialToolbar) {
+        toolbar.inflateMenu(R.menu.kline_menu)
+        val spinner = toolbar.menu.findItem(R.id.action_period).actionView as Spinner
+        // 顶栏为深色底：下拉箭头染白，便于辨识
+        spinner.backgroundTintList = ColorStateList.valueOf(Color.WHITE)
+        val items = resources.getStringArray(R.array.kline_periods)
+        // 顶栏为深色底：选中项文字用白色，下拉列表保持默认
+        spinner.adapter = object : ArrayAdapter<String>(this, android.R.layout.simple_spinner_item, items) {
+            override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+                val v = super.getView(position, convertView, parent)
+                (v as? TextView)?.setTextColor(Color.WHITE)
+                return v
+            }
+        }.apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        spinner.setSelection(periodIndex)
+        spinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (position == periodIndex) return
+                periodIndex = position
+                reload(anchorTs = null, count = null)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+    }
+
+    /** 按当前周期后台加载 K 线并刷新图表；[anchorTs]/[count] 用于旋转恢复。 */
+    private fun reload(anchorTs: Long?, count: Float?) {
+        val seq = ++loadSeq
+        val period = periodIndex
+        if (!synced) {
+            // 首次进入：先展示同步提示，后台同步完成后再读库绘图
+            emptyView.text = getString(R.string.kline_syncing)
+            emptyView.visibility = View.VISIBLE
+        }
+        executor.execute {
+            ensureSynced()
+            val bars = try {
+                loadBars(period)
+            } catch (e: IOException) {
+                mainHandler.post {
+                    if (seq == loadSeq && !isDestroyed) {
+                        Toast.makeText(this, R.string.kline_load_failed, Toast.LENGTH_SHORT).show()
+                    }
+                }
+                return@execute
+            }
+            mainHandler.post {
+                if (seq != loadSeq || isDestroyed) return@post
+                chart.intraday = period == PERIOD_5M || period == PERIOD_30M
+                chart.setData(bars, count ?: defaultCount(), anchorTs)
+                emptyView.text = getString(R.string.kline_empty)
+                emptyView.visibility = if (bars.isEmpty()) View.VISIBLE else View.GONE
+            }
+        }
+    }
+
+    /** 页面生命周期内只同步一次；同步失败仅提示，随后继续展示本地数据。 */
+    private fun ensureSynced() {
+        if (synced) return
+        synced = true
+        try {
+            KLineSync.syncStock(dbHelper, code)
+        } catch (e: IOException) {
+            AppLog.netError("K线同步失败，回落本地数据: code=$code", e)
+            mainHandler.post {
+                if (!isDestroyed) {
+                    Toast.makeText(this, R.string.kline_sync_failed, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun loadBars(period: Int): List<KBar> =
+        when (period) {
+            PERIOD_5M -> dbHelper.queryKBars(DbHelper.TABLE_K_5M, code, LIMIT_5M)
+            PERIOD_30M -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, code, LIMIT_30M)
+            PERIOD_DAY -> dbHelper.queryKBars(DbHelper.TABLE_K_DAY, code)
+            else -> KLineSynth.toWeekly(dbHelper.queryKBars(DbHelper.TABLE_K_DAY, code))
+        }
+
+    /** 竖屏 50 根、横屏 100 根。 */
+    private fun defaultCount(): Float =
+        if (resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
+            KLineChartView.DEFAULT_PORTRAIT_COUNT
+        } else {
+            KLineChartView.DEFAULT_LANDSCAPE_COUNT
+        }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt(KEY_PERIOD, periodIndex)
+        outState.putFloat(KEY_COUNT, chart.visibleCount)
+        outState.putBoolean(KEY_SYNCED, synced)
+        chart.rightEdgeTimestamp()?.let { outState.putLong(KEY_ANCHOR, it) }
+    }
+
+    override fun onDestroy() {
+        executor.shutdown()
+        dbHelper.close()
+        super.onDestroy()
+    }
+
+    companion object {
+        const val EXTRA_CODE = "extra_code"
+        const val EXTRA_NAME = "extra_name"
+
+        private const val KEY_PERIOD = "key_period"
+        private const val KEY_COUNT = "key_count"
+        private const val KEY_ANCHOR = "key_anchor"
+        private const val KEY_SYNCED = "key_synced"
+
+        private const val PERIOD_5M = 0
+        private const val PERIOD_30M = 1
+        private const val PERIOD_DAY = 2
+        private const val PERIOD_WEEK = 3
+
+        /** 5 分钟读库上限（两年约 2.3 万根，与 KLineSync.FIRST_5M 对齐）。 */
+        private const val LIMIT_5M = KLineSync.FIRST_5M
+
+        /** 30 分钟读库上限（两年约 3900 根，与 KLineSync.FIRST_30M 对齐）。 */
+        private const val LIMIT_30M = KLineSync.FIRST_30M
+
+        fun intent(activity: android.content.Context, code: String, name: String): Intent =
+            Intent(activity, KLineActivity::class.java)
+                .putExtra(EXTRA_CODE, code)
+                .putExtra(EXTRA_NAME, name)
+    }
+}

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="?attr/colorSurface"
+    android:fitsSystemWindows="true"
+    android:orientation="vertical">
+
+    <!-- 顶栏：标题=股票名称，副标题=代码，右上角周期下拉（菜单内 Spinner） -->
+    <com.google.android.material.appbar.MaterialToolbar
+        android:id="@+id/kline_toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="?attr/actionBarSize"
+        android:background="?attr/colorPrimary"
+        android:elevation="4dp"
+        app:navigationIcon="@drawable/ic_arrow_back"
+        app:navigationIconTint="@color/white"
+        app:subtitleTextColor="#CCFFFFFF"
+        app:titleTextColor="@color/white" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <lv.bingping.ausleser.ui.KLineChartView
+            android:id="@+id/kline_chart"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:paddingStart="2dp"
+            android:paddingTop="6dp"
+            android:paddingEnd="4dp"
+            android:paddingBottom="4dp" />
+
+        <TextView
+            android:id="@+id/tv_kline_empty"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:text="@string/kline_empty"
+            android:textColor="?attr/colorOnSurface"
+            android:textSize="14sp"
+            android:visibility="gone" />
+    </FrameLayout>
+</LinearLayout>

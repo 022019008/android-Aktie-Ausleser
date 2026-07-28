@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <!-- 右上角周期选择：actionView 为系统 Spinner，条目见 R.array.kline_periods -->
+    <item
+        android:id="@+id/action_period"
+        android:title="@string/kline_period"
+        app:actionViewClass="android.widget.Spinner"
+        app:showAsAction="always" />
+</menu>

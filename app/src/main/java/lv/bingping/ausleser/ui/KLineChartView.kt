@@ -1,0 +1,331 @@
+package lv.bingping.ausleser.ui
+
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.util.AttributeSet
+import android.view.GestureDetector
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
+import android.view.View
+import android.os.SystemClock
+import lv.bingping.ausleser.R
+import lv.bingping.ausleser.data.KBar
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
+
+/**
+ * K 线图控件：蜡烛图（红涨绿跌）+ 右侧价格轴 + 底部时间轴 + 网格。
+ *
+ * 交互：
+ *  - 单指拖动：向前/向后翻看历史；
+ *  - 双指合拢/展开：zoom-out / zoom-in，以手指焦点处的 K 线为锚点；
+ *    缩到极密时绘制自动降级：蜡烛 → 条形（仅高低竖线）→ 收盘折线，
+ *    1080p 横屏一屏可看约 2900 根；
+ *  - 可见条数与右边界均带边界钳制：最新一根始终可回到右缘，最早一根不会被翻过去。
+ *
+ * 数据由 [setData] 一次性提供（升序），翻页/缩放只在内存窗口上移动，不再回调外部。
+ */
+class KLineChartView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null
+) : View(context, attrs) {
+
+    /** 全部已加载 K 线（旧 -> 新）。 */
+    private var bars: List<KBar> = emptyList()
+
+    /** 当前可见条数（浮点，支持平滑缩放）。 */
+    var visibleCount: Float = DEFAULT_PORTRAIT_COUNT
+        private set
+
+    /** 最右侧可见 K 线的浮点下标（bars.size-1 表示最新一根贴右缘）。 */
+    private var rightIndex: Float = 0f
+
+    /** 分钟级周期为 true：时间轴主格式 HH:mm，跨日显示 MM-dd。 */
+    var intraday: Boolean = false
+
+    // ---------------- 绘图相关 ----------------
+
+    private val density = resources.displayMetrics.density
+    private fun dp(v: Float): Float = v * density
+
+    /** 右侧价格轴宽度 / 底部时间轴高度。 */
+    private val axisRightW = dp(62f)
+    private val axisBottomH = dp(20f)
+
+    /**
+     * 单根 K 线槽位的像素上下限，决定缩放倍率边界（上限可见根数 ≈ 绘图区宽 ÷ [minSlotPx]）。
+     * 缩到很密时绘制按槽宽分档降级（与主流行情 app 一致）：
+     * ≥[barModeSlotPx] 完整蜡烛；≥[lineModeSlotPx] 条形（仅涨跌色高低竖线，1px）；
+     * 更密则折线（收盘 polyline）。
+     */
+    private val minSlotPx = dp(0.25f)
+    private val maxSlotPx = dp(48f)
+    private val barModeSlotPx = dp(1.5f)
+    private val lineModeSlotPx = dp(0.8f)
+
+    private val gridPaint = Paint().apply {
+        color = 0x28888888
+        strokeWidth = 1f
+    }
+    private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = dp(10f)
+        color = 0xFF9E9E9E.toInt()
+    }
+    private val upPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = resources.getColor(R.color.kline_up, null)
+        strokeWidth = dp(1f)
+    }
+    private val downPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = resources.getColor(R.color.kline_down, null)
+        strokeWidth = dp(1f)
+    }
+
+    /** 极密折线模式线条（关闭抗锯齿：1px 直线段更锐利、更快）。 */
+    private val linePaint = Paint().apply {
+        color = resources.getColor(R.color.kline_line, null)
+        strokeWidth = 1f
+    }
+
+    private val fmtDay = newTimeFormat("MM-dd")
+    private val fmtTime = newTimeFormat("HH:mm")
+
+    private val tmpDate = Date()
+
+    // ---------------- 手势 ----------------
+
+    private val scaleDetector = ScaleGestureDetector(
+        context,
+        object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                if (bars.isEmpty()) return false
+                val slotW = slotWidth()
+                val startF = rightIndex - visibleCount + 1
+                // 焦点压在浮点下标 focusF 这根 K 线上，缩放后保持不动
+                val focusF = startF + (detector.focusX - paddingLeft - slotW / 2) / slotW
+                visibleCount = clampCount(visibleCount / detector.scaleFactor)
+                val newSlot = slotWidth()
+                val newStart = focusF - (detector.focusX - paddingLeft - newSlot / 2) / newSlot
+                rightIndex = newStart + visibleCount - 1
+                clampRight()
+                invalidate()
+                return true
+            }
+        }
+    )
+
+    private val gestureDetector = GestureDetector(
+        context,
+        object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+
+            override fun onScroll(
+                e1: MotionEvent?,
+                e2: MotionEvent,
+                distanceX: Float,
+                distanceY: Float
+            ): Boolean {
+                if (bars.isEmpty() || scaleDetector.isInProgress) return false
+                rightIndex += distanceX / slotWidth()
+                clampRight()
+                invalidate()
+                return true
+            }
+        }
+    )
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (bars.isEmpty()) return false
+        var handled = scaleDetector.onTouchEvent(event)
+        handled = gestureDetector.onTouchEvent(event) || handled
+        return handled || super.onTouchEvent(event)
+    }
+
+    // ---------------- 对外接口 ----------------
+
+    /**
+     * 设置数据并复位视窗。
+     *
+     * @param initialCount 初始可见条数（竖屏 50 / 横屏 100，由调用方按屏幕方向给）
+     * @param anchorTs 不为 null 时把该时间戳所在 K 线锚定到右缘（用于屏幕旋转后恢复位置）
+     */
+    fun setData(newBars: List<KBar>, initialCount: Float, anchorTs: Long? = null) {
+        bars = newBars
+        visibleCount = clampCount(initialCount)
+        val anchorIdx = if (anchorTs != null) bars.indexOfFirst { it.timestamp >= anchorTs }.takeIf { it >= 0 } else null
+        rightIndex = (anchorIdx ?: bars.size - 1).toFloat()
+        clampRight()
+        invalidate()
+    }
+
+    /** 当前右缘 K 线时间戳（旋转恢复用）；无数据返回 null。 */
+    fun rightEdgeTimestamp(): Long? = bars.getOrNull(rightIndex.roundToInt())?.timestamp
+
+    // ---------------- 布局与钳制 ----------------
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        visibleCount = clampCount(visibleCount)
+        clampRight()
+    }
+
+    private fun chartW(): Float = max(0f, width - paddingLeft - paddingRight - axisRightW)
+    private fun chartH(): Float = max(0f, height - paddingTop - paddingBottom - axisBottomH)
+    private fun slotWidth(): Float = chartW() / visibleCount
+
+    private fun clampCount(count: Float): Float {
+        if (bars.isEmpty()) return count.coerceAtLeast(2f)
+        val w = chartW()
+        val byWidthLo = if (w > 0f) w / maxSlotPx else 2f
+        val byWidthHi = if (w > 0f) w / minSlotPx else count
+        val lo = min(max(2f, byWidthLo), bars.size.toFloat())
+        val hi = max(lo, min(byWidthHi, bars.size.toFloat()))
+        return count.coerceIn(lo, hi)
+    }
+
+    private fun clampRight() {
+        if (bars.isEmpty()) {
+            rightIndex = 0f
+            return
+        }
+        val hi = bars.size - 1f
+        val lo = min(visibleCount - 1f, hi)
+        rightIndex = rightIndex.coerceIn(lo, hi)
+    }
+
+    // ---------------- 绘制 ----------------
+
+    override fun onDraw(canvas: Canvas) {
+        super.onDraw(canvas)
+        if (bars.isEmpty() || chartW() <= 0f || chartH() <= 0f) return
+
+        val slotW = slotWidth()
+        val startF = rightIndex - visibleCount + 1
+        val first = max(0, floor(startF).toInt())
+        val last = min(bars.size - 1, ceil(rightIndex).toInt())
+        if (first > last) return
+
+        // 可见区间价格范围（上下各留 6% 边距）
+        var minLow = Float.MAX_VALUE.toDouble()
+        var maxHigh = -Float.MAX_VALUE.toDouble()
+        for (i in first..last) {
+            if (bars[i].low < minLow) minLow = bars[i].low
+            if (bars[i].high > maxHigh) maxHigh = bars[i].high
+        }
+        var range = maxHigh - minLow
+        if (range <= 0.0) {
+            maxHigh += 1.0
+            minLow -= 1.0
+            range = 2.0
+        }
+        minLow -= range * 0.06
+        maxHigh += range * 0.06
+        range = maxHigh - minLow
+
+        val left = paddingLeft.toFloat()
+        val top = paddingTop.toFloat()
+        val cW = chartW()
+        val cH = chartH()
+
+        fun xOf(i: Int): Float = left + (i - startF + 0.5f) * slotW
+        fun yOf(p: Double): Float = top + ((maxHigh - p) / range * cH).toFloat()
+
+        // 横向网格 + 右侧价格标签（含上下边共 5 档）
+        labelPaint.textAlign = Paint.Align.LEFT
+        for (g in 0..4) {
+            val y = top + cH * g / 4
+            canvas.drawLine(left, y, left + cW, y, gridPaint)
+            val price = maxHigh - range * g / 4
+            canvas.drawText(formatPrice(price), left + cW + dp(4f), y + dp(3.5f), labelPaint)
+        }
+
+        // 纵向网格 + 底部时间标签（按槽宽自适应间隔，绝对下标取整保证平移时稳定）
+        val labelEvery = max(1, (dp(72f) / slotW).roundToInt())
+        labelPaint.textAlign = Paint.Align.CENTER
+        var prevLabelDay = -1
+        for (i in first..last) {
+            if (i % labelEvery != 0) continue
+            val x = xOf(i)
+            if (x < left || x > left + cW) continue
+            canvas.drawLine(x, top, x, top + cH, gridPaint)
+            canvas.drawText(formatTimeLabel(bars[i], i, first, prevLabelDay), x, top + cH + dp(14f), labelPaint)
+            prevLabelDay = dayNumber(bars[i].timestamp)
+        }
+
+        // 蜡烛：红涨绿跌；槽位过密时分档降级——蜡烛 → 条形（仅高低竖线）→ 收盘折线
+        when {
+            slotW >= barModeSlotPx -> {
+                upPaint.strokeWidth = dp(1f)
+                downPaint.strokeWidth = dp(1f)
+                val bodyW = max(1f, slotW * 0.72f)
+                for (i in first..last) {
+                    val bar = bars[i]
+                    val x = xOf(i)
+                    val paint = if (bar.close >= bar.open) upPaint else downPaint
+                    canvas.drawLine(x, yOf(bar.high), x, yOf(bar.low), paint)
+                    val yOpen = yOf(bar.open)
+                    val yClose = yOf(bar.close)
+                    val bodyTop = min(yOpen, yClose)
+                    val bodyH = max(abs(yOpen - yClose), dp(1f))
+                    canvas.drawRect(x - bodyW / 2, bodyTop, x + bodyW / 2, bodyTop + bodyH, paint)
+                }
+            }
+            slotW >= lineModeSlotPx -> {
+                // 条形模式：只画 1px 涨跌色高-低竖线，不画实体，避免相邻糊成色带
+                upPaint.strokeWidth = 1f
+                downPaint.strokeWidth = 1f
+                for (i in first..last) {
+                    val bar = bars[i]
+                    val x = xOf(i)
+                    val paint = if (bar.close >= bar.open) upPaint else downPaint
+                    canvas.drawLine(x, yOf(bar.high), x, yOf(bar.low), paint)
+                }
+            }
+            else -> {
+                // 折线模式：收盘价 polyline，可铺满数千根
+                for (i in first until last) {
+                    canvas.drawLine(xOf(i), yOf(bars[i].close), xOf(i + 1), yOf(bars[i + 1].close), linePaint)
+                }
+            }
+        }
+    }
+
+    // ---------------- 格式化 ----------------
+
+    private fun newTimeFormat(pattern: String) =
+        SimpleDateFormat(pattern, Locale.CHINA).apply { timeZone = TimeZone.getTimeZone("Asia/Shanghai") }
+
+    private fun formatPrice(p: Double): String =
+        when {
+            p < 10.0 -> "%.3f".format(p)
+            p < 10000.0 -> "%.2f".format(p)
+            else -> "%.0f".format(p)
+        }
+
+    private fun dayNumber(ts: Long): Int = ((ts + 8 * 3600L) / 86400L).toInt()
+
+    /** 分钟级显示 HH:mm，跨日处改显 MM-dd；日/周级统一 MM-dd。 */
+    private fun formatTimeLabel(bar: KBar, index: Int, firstVisible: Int, prevLabelDay: Int): String {
+        tmpDate.time = bar.timestamp * 1000
+        val day = dayNumber(bar.timestamp)
+        if (!intraday || index == firstVisible || day != prevLabelDay) {
+            // 周线第一根或跨年时补年份
+            return fmtDay.format(tmpDate)
+        }
+        return fmtTime.format(tmpDate)
+    }
+
+    companion object {
+        const val DEFAULT_PORTRAIT_COUNT = 50f
+        const val DEFAULT_LANDSCAPE_COUNT = 100f
+    }
+}

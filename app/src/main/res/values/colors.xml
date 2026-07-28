@@ -16,4 +16,11 @@
 
     <!-- 左滑同步按钮底色 -->
     <color name="stock_sync">#FF1E88E5</color>
+
+    <!-- K线图：红涨绿跌（国内习惯） -->
+    <color name="kline_up">#FFE04545</color>
+    <color name="kline_down">#FF2E9E5B</color>
+
+    <!-- K线图：极密折线模式（收盘 polyline）线条色 -->
+    <color name="kline_line">#FF5C9CE6</color>
 </resources>
