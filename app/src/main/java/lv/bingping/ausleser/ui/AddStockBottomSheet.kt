@@ -18,9 +18,11 @@ import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
 import lv.bingping.ausleser.R
+import lv.bingping.ausleser.data.DatasourceApi
 import lv.bingping.ausleser.data.DbHelper
 import lv.bingping.ausleser.data.Stock
 import lv.bingping.ausleser.data.StockSearchApi
+import lv.bingping.ausleser.util.AppLog
 import java.io.IOException
 import java.util.concurrent.Executors
 
@@ -166,6 +168,14 @@ class AddStockBottomSheet(
         if (rowId >= 0L) {
             Toast.makeText(context, context.getString(R.string.stock_added, stock.name), Toast.LENGTH_SHORT).show()
             onAdded()
+            // 通知服务端数据源开始跟踪该股（新股触发后台全量回填；幂等，失败不影响本地添加）
+            executor.execute {
+                try {
+                    DatasourceApi.registerStock(context, stock.code, stock.name)
+                } catch (e: Exception) {
+                    AppLog.netError("服务端登记失败: code=${stock.code}", e)
+                }
+            }
         } else {
             existing.remove(stock.code)
             Toast.makeText(context, R.string.stock_exists, Toast.LENGTH_SHORT).show()

@@ -4,10 +4,13 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.widget.Button
 import android.widget.ImageButton
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -16,7 +19,9 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
+import lv.bingping.ausleser.data.DatasourceApi
 import lv.bingping.ausleser.data.DbHelper
+import lv.bingping.ausleser.data.SelectStock
 import lv.bingping.ausleser.data.Settings
 import lv.bingping.ausleser.service.PollService
 import lv.bingping.ausleser.ui.AddStockBottomSheet
@@ -24,6 +29,7 @@ import lv.bingping.ausleser.ui.GroupManageBottomSheet
 import lv.bingping.ausleser.ui.StockListAdapter
 import lv.bingping.ausleser.ui.SwipeRevealCallback
 import lv.bingping.ausleser.util.AppLog
+import java.util.concurrent.Executors
 
 /**
  * 主页。
@@ -40,6 +46,10 @@ import lv.bingping.ausleser.util.AppLog
 class MainActivity : AppCompatActivity() {
 
     private lateinit var dbHelper: DbHelper
+
+    /** 网络操作（同步请求、服务端登记）用后台线程，模式同 KLineActivity。 */
+    private val executor = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private lateinit var btnSelberSelect: Button
     private lateinit var btnGroupManage: Button
@@ -76,10 +86,8 @@ class MainActivity : AppCompatActivity() {
 
         stockAdapter = StockListAdapter(
             onDelete = { stock -> removeStock(stock) },
-            // 同步按钮点击功能待定，先占位不做事（行情数据源接入前仅记录网络日志）
-            onSync = { stock ->
-                AppLog.net("点击同步（占位，未接入行情数据源）: code=${stock.code}, name=${stock.name}")
-            },
+            // 同步按钮：请求服务端对该股立即同步（后台执行，结果 Toast 提示）
+            onSync = { stock -> requestServerSync(stock) },
             onClick = { stock -> openKLine(stock) }
         )
         rvStocks.layoutManager = LinearLayoutManager(this)
@@ -196,18 +204,50 @@ class MainActivity : AppCompatActivity() {
         tvStocksEmpty.visibility = if (stocks.isEmpty()) View.VISIBLE else View.GONE
     }
 
-    /** 从当前分组移除一只股票并刷新列表。 */
-    private fun removeStock(stock: lv.bingping.ausleser.data.SelectStock) {
+    /** 从当前分组移除一只股票并刷新列表；全部分组都不再引用时通知服务端停用跟踪。 */
+    private fun removeStock(stock: SelectStock) {
         dbHelper.deleteStock(stock.id)
+        if (dbHelper.countStocksByCode(stock.code) == 0) {
+            executor.execute {
+                try {
+                    DatasourceApi.unregisterStock(this, stock.code)
+                } catch (e: Exception) {
+                    AppLog.netError("服务端停用跟踪失败: code=${stock.code}", e)
+                }
+            }
+        }
         reloadStocks()
     }
 
+    /** 请求服务端立即同步该股（后台执行），结果回主线程 Toast。 */
+    private fun requestServerSync(stock: SelectStock) {
+        executor.execute {
+            val ok = try {
+                DatasourceApi.requestSync(this, stock.code)
+            } catch (e: Exception) {
+                AppLog.netError("同步请求失败: code=${stock.code}", e)
+                false
+            }
+            mainHandler.post {
+                if (!isDestroyed) {
+                    Toast.makeText(
+                        this,
+                        if (ok) getString(R.string.sync_requested, stock.name)
+                        else getString(R.string.sync_request_failed),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+    }
+
     /** 打开指定股票的 K 线图页面。 */
-    private fun openKLine(stock: lv.bingping.ausleser.data.SelectStock) {
+    private fun openKLine(stock: SelectStock) {
         startActivity(KLineActivity.intent(this, stock.code, stock.name))
     }
 
     override fun onDestroy() {
+        executor.shutdown()
         dbHelper.close()
         super.onDestroy()
     }

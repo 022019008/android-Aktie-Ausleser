@@ -253,6 +253,16 @@ class DbHelper(context: Context) :
         return list
     }
 
+    /** 该代码在全部分组中占用的行数（删股时判断是否仍被其他分组引用）。 */
+    fun countStocksByCode(code: String): Int {
+        readableDatabase.rawQuery(
+            "SELECT COUNT(*) FROM $TABLE_SELECT_STOCK WHERE $COL_CODE=?",
+            arrayOf(code)
+        ).use { cursor ->
+            return if (cursor.moveToFirst()) cursor.getInt(0) else 0
+        }
+    }
+
     /**
      * 查询指定代码的 K 线（按时间升序，最多取最新 [limit] 条）。
      *

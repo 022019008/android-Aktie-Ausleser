@@ -44,6 +44,8 @@
     </string-array>
 
     <!-- 服务器设置 -->
+    <string name="sync_requested">已请求同步：%1$s</string>
+    <string name="sync_request_failed">同步请求失败</string>
     <string name="settings_action">服务器设置</string>
     <string name="settings_title">服务器设置</string>
     <string name="server_ip_hint">服务器 IP 地址</string>

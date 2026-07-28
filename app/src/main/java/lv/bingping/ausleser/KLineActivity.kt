@@ -16,6 +16,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
+import lv.bingping.ausleser.data.DatasourceApi
 import lv.bingping.ausleser.data.DbHelper
 import lv.bingping.ausleser.data.KBar
 import lv.bingping.ausleser.data.KLineSync
@@ -154,6 +155,13 @@ class KLineActivity : AppCompatActivity() {
     private fun ensureSynced() {
         if (synced) return
         synced = true
+        // 兜底登记：确保服务端已跟踪该股（幂等；新股会触发服务端后台全量回填，
+        // 首次打开可能尚无数据，稍后重开即有。种子库预置股也经此自动登记。）
+        try {
+            DatasourceApi.registerStock(applicationContext, code, name)
+        } catch (e: IOException) {
+            AppLog.netError("服务端登记失败（不影响本次读库）: code=$code", e)
+        }
         try {
             KLineSync.syncStock(applicationContext, dbHelper, code)
         } catch (e: IOException) {
