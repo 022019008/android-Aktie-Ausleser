@@ -47,6 +47,17 @@ pull 下来的库若已同步过 K 线，按下文「清空 K 线」一节处理
 导入 K 线与 ETF 自选；market.db 现为空占位文件，K 线改由运行时网络同步后
 该流程不再需要（通达信导入脚本 import-tdx.ps1 已随之删除）。
 
+**方式 D（现行推荐：脚本重建）**：`scripts/build-seed.ps1` 从
+`D:\Eigen\Git\Akties-Auswahl\market.db` 的 `t_eft` 表读取全部 ETF（37 只），
+从零重建种子库——分组为 `我的自选`（空）与 `ETF`，K 线表只建表不装数据，
+自动设 `user_version = 4` 并自校验（分组数 / 行数 / 空 K 线 / integrity）。
+幂等可重跑：
+
+```powershell
+scripts\build-seed.ps1                        # 缺省路径
+scripts\build-seed.ps1 -MarketDb <path> -Out <path> -Sqlite <path>
+```
+
 ## 清空 K 线（把任意来源的库改造为合规种子）
 
 ```bash

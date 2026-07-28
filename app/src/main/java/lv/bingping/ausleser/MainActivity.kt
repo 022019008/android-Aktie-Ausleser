@@ -1,17 +1,24 @@
 package lv.bingping.ausleser
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
 import android.widget.ImageButton
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import lv.bingping.ausleser.data.DbHelper
+import lv.bingping.ausleser.data.Settings
+import lv.bingping.ausleser.service.PollService
 import lv.bingping.ausleser.ui.AddStockBottomSheet
 import lv.bingping.ausleser.ui.GroupManageBottomSheet
 import lv.bingping.ausleser.ui.StockListAdapter
@@ -22,9 +29,11 @@ import lv.bingping.ausleser.util.AppLog
  * 主页。
  *
  * 结构：
- *  - 第一层：顶部工具栏（[R.id.top_toolbar]），内含“自选”按钮；
+ *  - 第一层：顶部工具栏（[R.id.top_toolbar]），标题右侧紧贴“自选”按钮，
+ *    最右侧齿轮打开服务器设置页（[SettingsActivity]）；
  *  - 第二层：顶部工具栏子栏（[R.id.sub_bar]），点击“自选”后显示全部自选分组，
- *    分组来自数据库表 t_selber_select_group，横向排列并可横向滑动；
+ *    分组来自数据库表 t_selber_select_group，横向排列并可横向滑动，
+ *    右侧“群组管理”用于增删改分组；
  *  - 第三层：股票工具栏（[R.id.stocks_toolbar]）+ 当前分组的自选列表，
  *    列表数据来自 t_selber_select_stock，右侧“+”可按代码/名称/拼音首字母搜索添加。
  */
@@ -106,6 +115,19 @@ class MainActivity : AppCompatActivity() {
                 AddStockBottomSheet(this, dbHelper, selectedGroupId) { reloadStocks() }.show()
             }
         }
+        findViewById<ImageButton>(R.id.btn_settings).setOnClickListener {
+            startActivity(android.content.Intent(this, SettingsActivity::class.java))
+        }
+
+        // 前台轮询服务要展示常驻通知：API 33+ 需运行时申请 POST_NOTIFICATIONS
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_POST_NOTIFICATIONS
+            )
+        }
 
         groupChipGroup.setOnCheckedStateChangeListener { group, checkedIds ->
             if (checkedIds.isNotEmpty()) {
@@ -120,6 +142,14 @@ class MainActivity : AppCompatActivity() {
 
         // 初始即按默认选中分组加载列表（子栏默认隐藏，但选中态与列表需就绪）
         refreshGroups()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 轮询开关开启且已配置服务器时，确保前台轮询服务在运行（服务内部自带去重）
+        if (Settings.isPollEnabled(this) && Settings.isConfigured(this)) {
+            PollService.start(this)
+        }
     }
 
     /** 展开 / 收起顶部工具栏子栏。 */
@@ -180,5 +210,9 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         dbHelper.close()
         super.onDestroy()
+    }
+
+    companion object {
+        private const val REQ_POST_NOTIFICATIONS = 1001
     }
 }
