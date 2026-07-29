@@ -1,8 +1,5 @@
 package lv.bingping.ausleser
 
-import android.Manifest
-import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -12,8 +9,6 @@ import android.widget.ImageButton
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -21,9 +16,8 @@ import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import lv.bingping.ausleser.data.DatasourceApi
 import lv.bingping.ausleser.data.DbHelper
+import lv.bingping.ausleser.data.KLineSync
 import lv.bingping.ausleser.data.SelectStock
-import lv.bingping.ausleser.data.Settings
-import lv.bingping.ausleser.service.PollService
 import lv.bingping.ausleser.ui.AddStockBottomSheet
 import lv.bingping.ausleser.ui.GroupManageBottomSheet
 import lv.bingping.ausleser.ui.StockListAdapter
@@ -66,6 +60,9 @@ class MainActivity : AppCompatActivity() {
     /** 当前选中的分组 id，刷新分组时用于保留选中。 */
     private var selectedGroupId: Long = -1L
 
+    /** 正在后台同步 K 线的股票代码（主线程访问），防重复点击。 */
+    private val syncingCodes = mutableSetOf<String>()
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -86,8 +83,8 @@ class MainActivity : AppCompatActivity() {
 
         stockAdapter = StockListAdapter(
             onDelete = { stock -> removeStock(stock) },
-            // 同步按钮：请求服务端对该股立即同步（后台执行，结果 Toast 提示）
-            onSync = { stock -> requestServerSync(stock) },
+            // 同步按钮：后台补全该股本地 K 线（先服务端登记再拉取，结果 Toast 提示）
+            onSync = { stock -> syncStockNow(stock) },
             onClick = { stock -> openKLine(stock) }
         )
         rvStocks.layoutManager = LinearLayoutManager(this)
@@ -127,16 +124,6 @@ class MainActivity : AppCompatActivity() {
             startActivity(android.content.Intent(this, SettingsActivity::class.java))
         }
 
-        // 前台轮询服务要展示常驻通知：API 33+ 需运行时申请 POST_NOTIFICATIONS
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            ActivityCompat.requestPermissions(
-                this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_POST_NOTIFICATIONS
-            )
-        }
-
         groupChipGroup.setOnCheckedStateChangeListener { group, checkedIds ->
             if (checkedIds.isNotEmpty()) {
                 val chip = group.findViewById<Chip>(checkedIds.first())
@@ -150,14 +137,6 @@ class MainActivity : AppCompatActivity() {
 
         // 初始即按默认选中分组加载列表（子栏默认隐藏，但选中态与列表需就绪）
         refreshGroups()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        // 轮询开关开启且已配置服务器时，确保前台轮询服务在运行（服务内部自带去重）
-        if (Settings.isPollEnabled(this) && Settings.isConfigured(this)) {
-            PollService.start(this)
-        }
     }
 
     /** 展开 / 收起顶部工具栏子栏。 */
@@ -219,21 +198,35 @@ class MainActivity : AppCompatActivity() {
         reloadStocks()
     }
 
-    /** 请求服务端立即同步该股（后台执行），结果回主线程 Toast。 */
-    private fun requestServerSync(stock: SelectStock) {
+    /**
+     * 同步按钮：后台补全该股本地 K 线（与进入 K 线页同一套 [KLineSync.syncStock]：
+     * 先向服务端登记，再按频率拉取入库，含复权检测与首次全量策略）。
+     * 结果回主线程 Toast；同一只股票同步进行中时忽略重复点击。
+     */
+    private fun syncStockNow(stock: SelectStock) {
+        if (!syncingCodes.add(stock.code)) {
+            Toast.makeText(this, getString(R.string.sync_in_progress, stock.name),
+                Toast.LENGTH_SHORT).show()
+            return
+        }
+        Toast.makeText(this, getString(R.string.sync_in_progress, stock.name),
+            Toast.LENGTH_SHORT).show()
         executor.execute {
             val ok = try {
-                DatasourceApi.requestSync(this, stock.code)
+                DatasourceApi.registerStock(applicationContext, stock.code, stock.name)
+                KLineSync.syncStock(applicationContext, dbHelper, stock.code)
+                true
             } catch (e: Exception) {
-                AppLog.netError("同步请求失败: code=${stock.code}", e)
+                AppLog.netError("K线同步失败: code=${stock.code}", e)
                 false
             }
             mainHandler.post {
+                syncingCodes.remove(stock.code)
                 if (!isDestroyed) {
                     Toast.makeText(
                         this,
-                        if (ok) getString(R.string.sync_requested, stock.name)
-                        else getString(R.string.sync_request_failed),
+                        if (ok) getString(R.string.sync_complete, stock.name)
+                        else getString(R.string.sync_failed),
                         Toast.LENGTH_SHORT
                     ).show()
                 }
@@ -250,9 +243,5 @@ class MainActivity : AppCompatActivity() {
         executor.shutdown()
         dbHelper.close()
         super.onDestroy()
-    }
-
-    companion object {
-        private const val REQ_POST_NOTIFICATIONS = 1001
     }
 }

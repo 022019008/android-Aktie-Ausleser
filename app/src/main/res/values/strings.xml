@@ -44,8 +44,9 @@
     </string-array>
 
     <!-- 服务器设置 -->
-    <string name="sync_requested">已请求同步：%1$s</string>
-    <string name="sync_request_failed">同步请求失败</string>
+    <string name="sync_in_progress">正在同步：%1$s</string>
+    <string name="sync_complete">同步完成：%1$s</string>
+    <string name="sync_failed">同步失败</string>
     <string name="settings_action">服务器设置</string>
     <string name="settings_title">服务器设置</string>
     <string name="server_ip_hint">服务器 IP 地址</string>
@@ -54,13 +55,7 @@
     <string name="testing_connection">正在测试连接…</string>
     <string name="connection_ok">连接成功</string>
     <string name="connection_fail">连接失败，请检查地址或稍后重试</string>
-    <string name="poll_enabled">启用盘中轮询（前台服务，每3分钟同步自选股）</string>
     <string name="save">保存</string>
     <string name="settings_saved">设置已保存</string>
     <string name="server_ip_empty">请填写服务器 IP</string>
-
-    <!-- 轮询前台服务 -->
-    <string name="poll_channel_name">行情同步</string>
-    <string name="poll_notification_title">行情同步运行中</string>
-    <string name="poll_notification_text">盘中每3分钟同步自选股K线</string>
 </resources>

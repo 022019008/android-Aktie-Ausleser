@@ -4,10 +4,6 @@
 
     <!-- 东方财富搜索联想接口（股票搜索）/ 自建数据源 Aktie_datasource -->
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- 盘中轮询前台服务 -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"
@@ -36,11 +32,6 @@
         <activity
             android:name=".SettingsActivity"
             android:exported="false" />
-
-        <service
-            android:name=".service.PollService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

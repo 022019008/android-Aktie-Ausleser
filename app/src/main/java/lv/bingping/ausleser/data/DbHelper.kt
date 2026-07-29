@@ -225,34 +225,6 @@ class DbHelper(context: Context) :
         return rows
     }
 
-    /** 查询全部自选股票（跨分组，按加入时间升序）；轮询服务据此遍历同步。 */
-    fun queryAllSelectStocks(): List<SelectStock> {
-        val list = mutableListOf<SelectStock>()
-        readableDatabase.query(
-            TABLE_SELECT_STOCK,
-            arrayOf(COLUMN_ID, COL_GROUP_ID, COL_CODE, COLUMN_NAME),
-            null, null, null, null,
-            "$COL_ADDED_AT ASC, $COLUMN_ID ASC"
-        ).use { cursor ->
-            val idIndex = cursor.getColumnIndexOrThrow(COLUMN_ID)
-            val gidIndex = cursor.getColumnIndexOrThrow(COL_GROUP_ID)
-            val codeIndex = cursor.getColumnIndexOrThrow(COL_CODE)
-            val nameIndex = cursor.getColumnIndexOrThrow(COLUMN_NAME)
-            while (cursor.moveToNext()) {
-                list.add(
-                    SelectStock(
-                        id = cursor.getLong(idIndex),
-                        groupId = cursor.getLong(gidIndex),
-                        code = cursor.getString(codeIndex),
-                        name = cursor.getString(nameIndex)
-                    )
-                )
-            }
-        }
-        AppLog.db("queryAllSelectStocks() -> ${list.size} 只股票")
-        return list
-    }
-
     /** 该代码在全部分组中占用的行数（删股时判断是否仍被其他分组引用）。 */
     fun countStocksByCode(code: String): Int {
         readableDatabase.rawQuery(
@@ -324,19 +296,6 @@ class DbHelper(context: Context) :
         }
         AppLog.db("kBarSummary(table=$table, code=$code) -> $summary，耗时 ${SystemClock.elapsedRealtime() - start}ms")
         return summary
-    }
-
-    /** 指定代码已存档的最新时间戳（轮询增量同步水位）；无存档返回 0。 */
-    fun maxKTimestamp(table: String, code: String): Long {
-        requireKTable(table)
-        readableDatabase.rawQuery(
-            "SELECT MAX($COL_TIMESTAMP) FROM $table WHERE $COL_CODE=?",
-            arrayOf(code)
-        ).use { cursor ->
-            val ts = if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else 0L
-            AppLog.db("maxKTimestamp(table=$table, code=$code) -> $ts")
-            return ts
-        }
     }
 
     /** 指定代码在某 K 线表是否存在非前复权（adjust<>'qfq'）行（种子库 bfq 遗留）。 */

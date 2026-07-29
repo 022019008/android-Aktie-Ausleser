@@ -64,13 +64,6 @@
                 android:layout_marginTop="16dp"
                 android:text="@string/test_connection" />
 
-            <com.google.android.material.switchmaterial.SwitchMaterial
-                android:id="@+id/switch_poll"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="24dp"
-                android:text="@string/poll_enabled" />
-
             <Button
                 android:id="@+id/btn_save"
                 android:layout_width="match_parent"

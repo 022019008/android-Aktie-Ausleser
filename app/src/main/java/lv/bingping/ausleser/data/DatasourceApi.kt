@@ -76,19 +76,6 @@ object DatasourceApi {
         return ok
     }
 
-    /**
-     * POST /api/stocks/{code}/sync 请求服务端手动同步（后台执行，立即返回）。
-     *
-     * @param full true=全窗口重下，false=tail 增量
-     */
-    fun requestSync(ctx: Context, code: String, full: Boolean = false): Boolean {
-        val url = "${Settings.getBaseUrl(ctx)}/api/stocks/$code/sync?full=$full"
-        val status = sendStatus("POST", url)
-        val ok = status in 200..299
-        if (!ok) AppLog.net("requestSync 异常状态: code=$code, HTTP $status")
-        return ok
-    }
-
     // ---------------------------------------------------------------- 内部实现
 
     /** 取 K 线并解析；网络/解析失败统一抛 [IOException]。 */
