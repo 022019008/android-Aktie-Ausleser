@@ -11,6 +11,8 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import android.os.SystemClock
 import lv.bingping.ausleser.R
+import lv.bingping.ausleser.data.ChanBi
+import lv.bingping.ausleser.data.ChanZhongshu
 import lv.bingping.ausleser.data.KBar
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -42,6 +44,11 @@ class KLineChartView @JvmOverloads constructor(
 
     /** 全部已加载 K 线（旧 -> 新）。 */
     private var bars: List<KBar> = emptyList()
+
+    /** 缠论叠加层（调用方以 Chan.analyze 计算后经 [setChanOverlay] 提供；[setData] 时清空）。 */
+    private var chanBi: List<ChanBi> = emptyList()
+    private var chanZs: List<ChanZhongshu> = emptyList()
+    private var chanSubZs: List<ChanZhongshu> = emptyList()
 
     /** 当前可见条数（浮点，支持平滑缩放）。 */
     var visibleCount: Float = DEFAULT_PORTRAIT_COUNT
@@ -93,6 +100,24 @@ class KLineChartView @JvmOverloads constructor(
     /** 极密折线模式线条（关闭抗锯齿：1px 直线段更锐利、更快）。 */
     private val linePaint = Paint().apply {
         color = resources.getColor(R.color.kline_line, null)
+        strokeWidth = 1f
+    }
+
+    /** 缠论：笔（黄色折线）。 */
+    private val biPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = resources.getColor(R.color.chan_bi, null)
+        strokeWidth = dp(1.5f)
+    }
+
+    /** 缠论：本级别中枢（蓝）与次级别中枢（橙）——半透明填充 + 1px 描边各一支笔。 */
+    private val zsFillPaint = Paint().apply { color = resources.getColor(R.color.chan_zs_fill, null) }
+    private val zsStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = resources.getColor(R.color.chan_zs_stroke, null)
+        strokeWidth = 1f
+    }
+    private val zsSubFillPaint = Paint().apply { color = resources.getColor(R.color.chan_zs_sub_fill, null) }
+    private val zsSubStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = resources.getColor(R.color.chan_zs_sub_stroke, null)
         strokeWidth = 1f
     }
 
@@ -160,10 +185,24 @@ class KLineChartView @JvmOverloads constructor(
      */
     fun setData(newBars: List<KBar>, initialCount: Float, anchorTs: Long? = null) {
         bars = newBars
+        chanBi = emptyList()
+        chanZs = emptyList()
+        chanSubZs = emptyList()
         visibleCount = clampCount(initialCount)
         val anchorIdx = if (anchorTs != null) bars.indexOfFirst { it.timestamp >= anchorTs }.takeIf { it >= 0 } else null
         rightIndex = (anchorIdx ?: bars.size - 1).toFloat()
         clampRight()
+        invalidate()
+    }
+
+    /**
+     * 设置缠论叠加层：本级别笔、本级别中枢、次级别中枢（均由 `Chan.analyze` 计算）。
+     * 传 null 清除对应部分；换数据时 [setData] 会一并清空。
+     */
+    fun setChanOverlay(bi: List<ChanBi>?, zs: List<ChanZhongshu>?, subZs: List<ChanZhongshu>?) {
+        chanBi = bi.orEmpty()
+        chanZs = zs.orEmpty()
+        chanSubZs = subZs.orEmpty()
         invalidate()
     }
 
@@ -297,6 +336,57 @@ class KLineChartView @JvmOverloads constructor(
                 }
             }
         }
+
+        // 缠论叠加：次级别中枢 → 本级别中枢 → 笔（笔在最上），裁剪在绘图区内
+        if (chanBi.isNotEmpty() || chanZs.isNotEmpty() || chanSubZs.isNotEmpty()) {
+            drawChanOverlay(canvas, first, last, startF, slotW, left, top, cW, cH, maxHigh, range)
+        }
+    }
+
+    /**
+     * 绘制缠论叠加层。时间戳经二分定位到浮点下标再取 x（次级别中枢的时间戳
+     * 不在本级 bars 序列里，只能按时间戳插入点定位）；价格直接走与蜡烛相同的 y 映射。
+     */
+    private fun drawChanOverlay(
+        canvas: Canvas, first: Int, last: Int, startF: Float, slotW: Float,
+        left: Float, top: Float, cW: Float, cH: Float, maxHigh: Double, range: Double,
+    ) {
+        fun xOfTs(ts: Long): Float {
+            var lo = 0
+            var hi = bars.size
+            while (lo < hi) {
+                val mid = (lo + hi) ushr 1
+                if (bars[mid].timestamp < ts) lo = mid + 1 else hi = mid
+            }
+            return left + (lo.coerceAtMost(bars.size - 1) - startF + 0.5f) * slotW
+        }
+        fun yOf(p: Double): Float = top + ((maxHigh - p) / range * cH).toFloat()
+        fun drawZs(zs: ChanZhongshu, fill: Paint, stroke: Paint) {
+            val x1 = xOfTs(zs.startTs)
+            val x2 = maxOf(xOfTs(zs.endTs), x1 + 1f)
+            canvas.drawRect(x1, yOf(zs.zg), x2, yOf(zs.zd), fill)
+            canvas.drawRect(x1, yOf(zs.zg), x2, yOf(zs.zd), stroke)
+        }
+
+        canvas.save()
+        canvas.clipRect(left, top, left + cW, top + cH)
+        val loTs = bars[first].timestamp
+        val hiTs = bars[last].timestamp
+        for (zs in chanSubZs) {
+            if (zs.endTs >= loTs && zs.startTs <= hiTs) drawZs(zs, zsSubFillPaint, zsSubStrokePaint)
+        }
+        for (zs in chanZs) {
+            if (zs.endTs >= loTs && zs.startTs <= hiTs) drawZs(zs, zsFillPaint, zsStrokePaint)
+        }
+        for (bi in chanBi) {
+            if (bi.endTs >= loTs && bi.startTs <= hiTs) {
+                canvas.drawLine(
+                    xOfTs(bi.startTs), yOf(bi.start.price),
+                    xOfTs(bi.endTs), yOf(bi.end.price), biPaint
+                )
+            }
+        }
+        canvas.restore()
     }
 
     // ---------------- 格式化 ----------------

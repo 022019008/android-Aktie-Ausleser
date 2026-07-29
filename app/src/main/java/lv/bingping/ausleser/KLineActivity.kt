@@ -16,6 +16,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
+import lv.bingping.ausleser.data.Chan
 import lv.bingping.ausleser.data.DatasourceApi
 import lv.bingping.ausleser.data.DbHelper
 import lv.bingping.ausleser.data.KBar
@@ -37,6 +38,9 @@ import java.util.concurrent.Executors
  * 数据源（同步后全部读库）：
  *  - 5分钟：库表 t_k_5m；30分钟：库表 t_k_30m（均由自建数据源 Aktie_datasource 网络拉取）；
  *  - 日线：库表 t_k_day；周线：由日线内存聚合（[KLineSynth.toWeekly]）。
+ *
+ * 图上叠加缠论笔与中枢（[Chan] 纯算法计算）：本级别笔 + 本级别中枢 +
+ * 次级别中枢（日线图叠 30 分钟中枢、30 分钟图叠 5 分钟中枢、周线图叠日线中枢）。
  *
  * 默认可见条数按屏幕方向：竖屏 [KLineChartView.DEFAULT_PORTRAIT_COUNT] 根，
  * 横屏 [KLineChartView.DEFAULT_LANDSCAPE_COUNT] 根；旋转后恢复周期与视窗位置。
@@ -141,10 +145,14 @@ class KLineActivity : AppCompatActivity() {
                 }
                 return@execute
             }
+            // 缠论：本级别笔与中枢；次级别中枢（日线←30m、30m←5m、周线←日线，5m 无更低级别）
+            val chan = Chan.analyze(bars)
+            val subZs = loadSubBars(period)?.let { Chan.analyze(it).zhongshu }
             mainHandler.post {
                 if (seq != loadSeq || isDestroyed) return@post
                 chart.intraday = period == PERIOD_5M || period == PERIOD_30M
                 chart.setData(bars, count ?: defaultCount(), anchorTs)
+                chart.setChanOverlay(chan.bi, chan.zhongshu, subZs)
                 emptyView.text = getString(R.string.kline_empty)
                 emptyView.visibility = if (bars.isEmpty()) View.VISIBLE else View.GONE
             }
@@ -180,6 +188,15 @@ class KLineActivity : AppCompatActivity() {
             PERIOD_30M -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, code, LIMIT_30M)
             PERIOD_DAY -> dbHelper.queryKBars(DbHelper.TABLE_K_DAY, code)
             else -> KLineSynth.toWeekly(dbHelper.queryKBars(DbHelper.TABLE_K_DAY, code))
+        }
+
+    /** 次级别 K 线（用于叠加次级别中枢）；5 分钟无更低级别返回 null。 */
+    private fun loadSubBars(period: Int): List<KBar>? =
+        when (period) {
+            PERIOD_30M -> dbHelper.queryKBars(DbHelper.TABLE_K_5M, code, LIMIT_5M)
+            PERIOD_DAY -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, code, LIMIT_30M)
+            PERIOD_WEEK -> dbHelper.queryKBars(DbHelper.TABLE_K_DAY, code)
+            else -> null
         }
 
     /** 竖屏 50 根、横屏 100 根。 */
