@@ -124,10 +124,10 @@ class KLineSyncTest {
 
     @Test
     fun detectAdjustChange_roundingNoiseBelowEpsilon_isFalse() {
-        // 跨源小数点舍入级别的差异（<0.3%）不应误报
+        // 跨源小数点舍入级别的差异（<0.1%）不应误报
         val t = (0L until 4).map { ts(2026, 7, 20 + it.toInt()) }
         val stored = t.map { bar(it, 10.0) }
-        val fetched = t.map { bar(it, 10.02) }   // +0.2% < 3e-3
+        val fetched = t.map { bar(it, 10.005) }   // +0.05% < 1e-3
         assertFalse(KLineSync.detectAdjustChange(stored, fetched))
     }
 

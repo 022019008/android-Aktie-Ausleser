@@ -61,8 +61,8 @@ object KLineSync {
     private const val OVERLAP_60M = 8
     private const val OVERLAP_DAY = 5
 
-    /** 复权检测阈值：重叠 bar 收盘价相对差超过此值判定除权除息（只比价格、不比成交量，避免跨源误判）。 */
-    private const val ADJUST_DIFF_EPS = 3e-3
+    /** 复权检测阈值：重叠 bar 收盘价相对差超过此值（0.1%）判定除权除息（只比价格、不比成交量，避免跨源误判）。 */
+    private const val ADJUST_DIFF_EPS = 1e-3
 
     /** 盘中实时刷新间隔：已有当日 bar 但距今超过该秒数（且仍在交易时段）→ 重新拉实时。 */
     private const val REALTIME_STALE_SEC = 300
