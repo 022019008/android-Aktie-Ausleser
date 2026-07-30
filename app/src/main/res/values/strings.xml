@@ -33,12 +33,12 @@
     <!-- K线图 -->
     <string name="kline_period">周期</string>
     <string name="kline_empty">暂无K线数据</string>
-    <string name="kline_load_failed">K线加载失败</string>
     <string name="kline_syncing">正在同步行情数据…</string>
     <string name="kline_sync_failed">行情同步失败，展示本地数据</string>
     <string-array name="kline_periods">
         <item>5分钟</item>
         <item>30分钟</item>
+        <item>60分钟</item>
         <item>日线</item>
         <item>周线</item>
     </string-array>

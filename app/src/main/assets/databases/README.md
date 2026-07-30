@@ -12,19 +12,20 @@
 
 - **只携带自选数据**：`t_selber_select_group`（默认分组含 `我的自选` 与 `ETF`）
   与 `t_selber_select_stock`（初始自选行）；
-- **K 线表必须为空**：`t_k_5m` / `t_k_30m` / `t_k_day` 只建表不装数据——
+- **K 线表必须为空**：`t_k_5m` / `t_k_30m` / `t_k_60m` / `t_k_day` 只建表不装数据——
   K 线一律由 app 运行时从网络同步（`data/KLineSync.kt`，前复权，
-  首次下载 5m/30m 两年、日线五年，之后增量补尾、除权除息自动重建）；
+  首次下载 5m/30m 两年、60m/日线五年，之后增量补尾、除权除息自动重建）；
 - `adjust` 列语义：应用同步写入 `'qfq'`（前复权）；同步时发现非 `'qfq'`
   行（历史遗留）会清掉该股重建，故种子库不应再写入任何 K 线行。
 
 ## 种子库要求
 
 - schema 与 `DbHelper` 当前定义完全一致（t_selber_select_group /
-  t_selber_select_stock / t_k_5m / t_k_30m / t_k_day 及索引）；
-- 必须设置 `PRAGMA user_version = 4`（= `DbHelper.DB_VERSION`），
+  t_selber_select_stock / t_k_5m / t_k_30m / t_k_60m / t_k_day 及索引）；
+- 必须设置 `PRAGMA user_version = 5`（= `DbHelper.DB_VERSION`），
   否则 SQLiteOpenHelper 打开时会重跑 onCreate 直接崩溃
-  （旧 v3 种子仍可安装：打开时 onUpgrade 会自动补建 t_k_30m 并清空旧 K 线）；
+  （旧 v3/v4 种子仍可安装：打开时 onUpgrade 会自动补建缺失的 K 线表，
+  v3 种子另会清空 bfq 遗留 K 线）；
 - 只放 `ausleser.db` 本体，不能带 `-wal` / `-shm` / `-journal` 残留
   （构建完先 force-stop 应用或 `PRAGMA wal_checkpoint(TRUNCATE)`）。
 
@@ -40,7 +41,7 @@ adb exec-out run-as lv.bingping.ausleser cat databases/ausleser.db > ausleser.db
 pull 下来的库若已同步过 K 线，按下文「清空 K 线」一节处理后再打包。
 
 **方式 B（从零建空库）**：用 sqlite3 从零建库（schema 照抄 `DbHelper.onCreate`），
-插入默认分组与自选行，执行 `PRAGMA user_version = 4;`，默认分组需包含
+插入默认分组与自选行，执行 `PRAGMA user_version = 5;`，默认分组需包含
 `我的自选` 与 `ETF`。
 
 **方式 C（已废弃，留档）**：`scripts/import-market.ps1` 曾用于从 market.db
@@ -50,7 +51,7 @@ pull 下来的库若已同步过 K 线，按下文「清空 K 线」一节处理
 **方式 D（现行推荐：脚本重建）**：`scripts/build-seed.ps1` 从
 `D:\Eigen\Git\Akties-Auswahl\market.db` 的 `t_eft` 表读取全部 ETF（37 只），
 从零重建种子库——分组为 `我的自选`（空）与 `ETF`，K 线表只建表不装数据，
-自动设 `user_version = 4` 并自校验（分组数 / 行数 / 空 K 线 / integrity）。
+自动设 `user_version = 5` 并自校验（分组数 / 行数 / 空 K 线 / integrity）。
 幂等可重跑：
 
 ```powershell
@@ -65,14 +66,15 @@ sqlite3 ausleser.db <<'SQL'
 BEGIN;
 DELETE FROM t_k_5m;
 DELETE FROM t_k_30m;
+DELETE FROM t_k_60m;
 DELETE FROM t_k_day;
 COMMIT;
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;
 VACUUM;
 SQL
 ```
 
-（库中缺 `t_k_30m` 时先按 `DbHelper.createKTables` 的 schema 建表+索引。）
+（库中缺 `t_k_30m` / `t_k_60m` 时先按 `DbHelper.createKTables` 的 schema 建表+索引。）
 
 ## 调试提示
 

@@ -9,10 +9,10 @@ import kotlin.math.abs
 
 /**
  * 个股 K 线同步编排：打开 K 线页时在后台线程调用 [syncStock]，
- * 使本地 t_k_5m / t_k_30m / t_k_day 保持最新，入库一律前复权（adjust=[ADJUST_QFQ]）。
+ * 使本地 t_k_5m / t_k_30m / t_k_60m / t_k_day 保持最新，入库一律前复权（adjust=[ADJUST_QFQ]）。
  *
- * 数据来源为自建数据源 Aktie_datasource（[DatasourceApi]，freq=5m/30m/day），
- * 服务端存储窗口：5m 半年、30m 两年、日线五年；App 请求条数超过服务端
+ * 数据来源为自建数据源 Aktie_datasource（[DatasourceApi]，freq=5m/30m/60m/day），
+ * 服务端存储窗口：5m 半年、30m 两年、60m 与日线五年；App 请求条数超过服务端
  * 上限时由服务端自动截断，能拿多少算多少。
  *
  * 每张表独立执行以下策略（单表失败不阻断其余表）：
@@ -21,9 +21,9 @@ import kotlin.math.abs
  *  2. 否则拉尾部增量（至少带 [OVERLAP_5M] 等重叠根数）：
  *     重叠已完成 bar 收盘价一致 → 仅 upsert 拉到的新数据；
  *     价格被重算（除权除息，前复权基准变化）→ 清掉该股该表全部行 → 全量重拉入库；
- *  3. 三个周期均各自从数据源直接拉取（30m 为服务端 freq=30m，不由 5m 聚合）。
+ *  3. 四个周期均各自从数据源直接拉取（30m/60m 为服务端自有表，不由 5m 聚合）。
  *
- * 仅当三个周期的网络拉取**全部**失败时向外抛 [IOException]；
+ * 仅当四个周期的网络拉取**全部**失败时向外抛 [IOException]；
  * 调用方（KLineActivity）提示用户后仍应展示本地已有数据。
  */
 object KLineSync {
@@ -33,23 +33,27 @@ object KLineSync {
     /** 入库复权类型：前复权。 */
     const val ADJUST_QFQ = "qfq"
 
-    /** 首次下载 / 复权重建量级：5m、30m 各两年（约 242 交易日/年），日线五年。 */
+    /** 首次下载 / 复权重建量级：5m、30m 各两年（约 242 交易日/年），60m、日线五年。 */
     const val FIRST_5M = 24_000
     const val FIRST_30M = 4_000
+    const val FIRST_60M = 5_000
     const val FIRST_DAY = 1_300
 
     /** 数据源频率参数（Aktie_datasource /api/kline 的 freq 取值）。 */
     private const val FREQ_5M = "5m"
     private const val FREQ_30M = "30m"
+    private const val FREQ_60M = "60m"
     private const val FREQ_DAY = "day"
 
-    /** 每交易日 bar 数（5m：9:30-11:30 与 13:00-15:00 共 48 根；30m：8 根）。 */
+    /** 每交易日 bar 数（5m：9:30-11:30 与 13:00-15:00 共 48 根；30m：8 根；60m：4 根）。 */
     private const val BARS_PER_DAY_5M = 48
     private const val BARS_PER_DAY_30M = 8
+    private const val BARS_PER_DAY_60M = 4
 
-    /** 增量同步时尾部至少携带的重叠根数（兼作复权检测样本：约 2/2/5 个交易日）。 */
+    /** 增量同步时尾部至少携带的重叠根数（兼作复权检测样本：约 2/2/2/5 个交易日）。 */
     private const val OVERLAP_5M = 96
     private const val OVERLAP_30M = 16
+    private const val OVERLAP_60M = 8
     private const val OVERLAP_DAY = 5
 
     /** 复权检测阈值：重叠 bar 收盘价相对差超过此值判定除权除息（只比价格、不比成交量，避免跨源误判）。 */
@@ -59,7 +63,7 @@ object KLineSync {
      * 同步一只股票的 K 线（阻塞式，必须在后台线程调用）。
      *
      * @param context 用于读取服务器配置（[Settings]）与拼装请求地址
-     * @throws IOException 三个周期的网络拉取全部失败（本地未新增任何数据）
+     * @throws IOException 四个周期的网络拉取全部失败（本地未新增任何数据）
      */
     fun syncStock(context: Context, db: DbHelper, code: String) {
         val start = android.os.SystemClock.elapsedRealtime()
@@ -86,6 +90,15 @@ object KLineSync {
         }
 
         try {
+            syncTable(db, DbHelper.TABLE_K_60M, code, nowSec, BARS_PER_DAY_60M, OVERLAP_60M, FIRST_60M) {
+                DatasourceApi.fetchKline(context, code, FREQ_60M, it)
+            }
+        } catch (e: IOException) {
+            failures++
+            AppLog.netError("同步 60m 失败: code=$code", e)
+        }
+
+        try {
             syncTable(db, DbHelper.TABLE_K_DAY, code, nowSec, 1, OVERLAP_DAY, FIRST_DAY) {
                 DatasourceApi.fetchKline(context, code, FREQ_DAY, it)
             }
@@ -94,8 +107,8 @@ object KLineSync {
             AppLog.netError("同步日线失败: code=$code", e)
         }
 
-        AppLog.net("同步结束: code=$code, 失败周期 $failures/3, 耗时 ${android.os.SystemClock.elapsedRealtime() - start}ms")
-        if (failures == 3) throw IOException("K线同步全部失败: code=$code")
+        AppLog.net("同步结束: code=$code, 失败周期 $failures/4, 耗时 ${android.os.SystemClock.elapsedRealtime() - start}ms")
+        if (failures == 4) throw IOException("K线同步全部失败: code=$code")
     }
 
     /**

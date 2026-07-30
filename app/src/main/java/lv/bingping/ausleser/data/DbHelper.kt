@@ -44,6 +44,10 @@ class DbHelper(context: Context) :
             }
             AppLog.db("onUpgrade: 已清空种子库遗留 K 线（bfq 作废，改由网络同步 qfq）")
         }
+        if (oldVersion < 5) {
+            // v5：新增 60 分钟表（数据源 freq=60m，服务端五年窗口），由 KLineSync 运行时同步
+            createKTables(db, listOf(TABLE_K_60M))
+        }
     }
 
     private fun createGroupTable(db: SQLiteDatabase) {
@@ -238,8 +242,8 @@ class DbHelper(context: Context) :
     /**
      * 查询指定代码的 K 线（按时间升序，最多取最新 [limit] 条）。
      *
-     * 注：三张 K 线表（[TABLE_K_5M] / [TABLE_K_30M] / [TABLE_K_DAY]）均由
-     * [KLineSync] 在打开 K 线页时从网络同步（前复权，adjust='qfq'）。
+     * 注：四张 K 线表（[TABLE_K_5M] / [TABLE_K_30M] / [TABLE_K_60M] / [TABLE_K_DAY]）
+     * 均由 [KLineSync] 在打开 K 线页时从网络同步（前复权，adjust='qfq'）。
      */
     fun queryKBars(table: String, code: String, limit: Int = MAX_K_BARS): List<KBar> {
         requireKTable(table)
@@ -391,7 +395,7 @@ class DbHelper(context: Context) :
 
     companion object {
         const val DB_NAME = "ausleser.db"
-        const val DB_VERSION = 4
+        const val DB_VERSION = 5
 
         /** 单次 K 线查询上限（2 年 5 分钟约 2.3 万根，留有余量）。 */
         const val MAX_K_BARS = 25_000
@@ -403,10 +407,11 @@ class DbHelper(context: Context) :
         const val TABLE_SELECT_STOCK = "t_selber_select_stock"
         const val TABLE_K_5M = "t_k_5m"
         const val TABLE_K_30M = "t_k_30m"
+        const val TABLE_K_60M = "t_k_60m"
         const val TABLE_K_DAY = "t_k_day"
 
         /** 全部 K 线表（schema 相同）。 */
-        private val K_TABLES = listOf(TABLE_K_5M, TABLE_K_30M, TABLE_K_DAY)
+        private val K_TABLES = listOf(TABLE_K_5M, TABLE_K_30M, TABLE_K_60M, TABLE_K_DAY)
 
         /** K 线查询投影列（顺序须与 [readBars] 的取列逻辑一致）。 */
         private val K_BAR_COLUMNS =
