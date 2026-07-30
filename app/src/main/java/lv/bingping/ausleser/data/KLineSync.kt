@@ -5,6 +5,9 @@ import lv.bingping.ausleser.util.AppLog
 import java.io.IOException
 import java.time.Instant
 import java.time.ZoneId
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.read
+import kotlin.concurrent.write
 import kotlin.math.abs
 
 /**
@@ -26,12 +29,22 @@ import kotlin.math.abs
  * 仅当四个周期的网络拉取**全部**失败时向外抛 [IOException]；
  * 调用方（KLineActivity）提示用户后仍应展示本地已有数据。
  *
- * 历史同步之后另走 [syncRealtime] 当日实时补齐：库存（历史接口）在收盘定稿前
- * 不含当日 bar，故本地补不到当日时改从数据源实时接口（/api/kline/{code}/realtime，
- * AkShare 东财当日数据）取当日 bar 本地覆写展示；尽力而为，随后历史同步的
- * 权威值按主键覆盖。
+ * 当日实时补齐另走 [syncRealtime]：库存（历史接口）在收盘定稿前不含当日 bar，
+ * 故本地补不到当日时改从数据源实时接口（/api/kline/{code}/realtime，AkShare
+ * 东财当日数据）取当日 bar 本地覆写展示；尽力而为，随后历史同步的权威值按主键
+ * 覆盖。编排约束两条：调用方须在历史同步**成功入库后**才执行 [syncRealtime]；
+ * 进程级读写锁 [SYNC_LOCK]（历史持读锁、实时持写锁）保证发往数据源的历史与
+ * 实时两类请求绝不并行——KLineActivity 与 MainActivity 各有独立后台 executor，
+ * 无此锁时两处的历史/实时请求可能在网络上重叠。
  */
 object KLineSync {
+
+    /**
+     * 进程级同步锁：[syncStock] 持读锁、[syncRealtime] 持写锁。
+     * 多路历史同步互不阻塞；实时补齐与任何在途历史同步互斥，
+     * 即实时请求只会在全部历史请求完成入库之后才开始。
+     */
+    private val SYNC_LOCK = ReentrantReadWriteLock()
 
     private val ZONE_BJ: ZoneId = ZoneId.of("Asia/Shanghai")
 
@@ -68,12 +81,13 @@ object KLineSync {
     private const val REALTIME_STALE_SEC = 300
 
     /**
-     * 同步一只股票的 K 线（阻塞式，必须在后台线程调用）。
+     * 同步一只股票的 K 线（阻塞式，必须在后台线程调用）；持 [SYNC_LOCK] 读锁，
+     * 与 [syncRealtime] 互斥（见对象说明）。
      *
      * @param context 用于读取服务器配置（[Settings]）与拼装请求地址
      * @throws IOException 四个周期的网络拉取全部失败（本地未新增任何数据）
      */
-    fun syncStock(context: Context, db: DbHelper, code: String) {
+    fun syncStock(context: Context, db: DbHelper, code: String) = SYNC_LOCK.read {
         val start = android.os.SystemClock.elapsedRealtime()
         val nowSec = System.currentTimeMillis() / 1000
         AppLog.net("同步开始: code=$code")
@@ -120,14 +134,18 @@ object KLineSync {
     }
 
     /**
-     * 当日实时补齐（阻塞式，后台线程调用；历史同步之后执行）。
+     * 当日实时补齐（阻塞式，后台线程调用）。
+     *
+     * 编排约束：仅在历史同步成功入库之后由调用方触发（见 KLineActivity.ensureSynced）；
+     * 持 [SYNC_LOCK] 写锁——等待所有在途 [syncStock] 历史请求完成入库后才开始，
+     * 期间也不允许新的历史同步插入，两类数据源请求绝不并行。
      *
      * 逐频率判断本地是否缺当日数据（[needsRealtime]），缺则经数据源实时接口
      * [DatasourceApi.fetchKlineRealtime] 取当日 bar upsert 入库（qfq 标记；
      * 随后历史同步的收盘权威值按主键覆盖）。尽力而为：单频率失败只记日志，
      * 不阻断其余频率、不向外抛（页面照常展示历史数据）。
      */
-    fun syncRealtime(context: Context, db: DbHelper, code: String) {
+    fun syncRealtime(context: Context, db: DbHelper, code: String) = SYNC_LOCK.write {
         val nowSec = System.currentTimeMillis() / 1000
         val tables = listOf(
             DbHelper.TABLE_K_5M to FREQ_5M,

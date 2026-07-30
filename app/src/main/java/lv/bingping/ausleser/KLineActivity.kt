@@ -32,9 +32,9 @@ import java.util.concurrent.Executors
  *
  * 进入页面先经 [KLineSync.syncStock] 在后台同步该股历史 K 线（前复权入库，
  * 首次下载 5m/30m 两年、60m/日线五年，其后增量补尾、除权除息时自动重建），
- * 随后 [KLineSync.syncRealtime] 按需补齐当日实时 bar（库存定稿前历史接口
- * 不含当日数据）；同步失败仅提示，仍展示本地已有数据；同一页面生命周期内
- * 只同步一次。
+ * 历史同步成功入库后再经 [KLineSync.syncRealtime] 按需补齐当日实时 bar
+ * （库存定稿前历史接口不含当日数据；历史全部失败则跳过实时请求）；
+ * 同步失败仅提示，仍展示本地已有数据；同一页面生命周期内只同步一次。
  *
  * 数据源（同步后全部读库）：
  *  - 5分钟：库表 t_k_5m；30分钟：t_k_30m；60分钟：t_k_60m
@@ -194,8 +194,10 @@ class KLineActivity : AppCompatActivity() {
         } catch (e: Exception) {
             AppLog.netError("服务端登记失败（不影响本次读库）: code=$code", e)
         }
+        var historyOk = false
         try {
             KLineSync.syncStock(applicationContext, dbHelper, code)
+            historyOk = true
         } catch (e: Exception) {
             AppLog.netError("K线同步失败，回落本地数据: code=$code", e)
             mainHandler.post {
@@ -204,11 +206,15 @@ class KLineActivity : AppCompatActivity() {
                 }
             }
         }
-        // 当日实时补齐：历史接口定稿前补不到当日 bar，改走实时接口（尽力而为）
-        try {
-            KLineSync.syncRealtime(applicationContext, dbHelper, code)
-        } catch (e: Exception) {
-            AppLog.netError("实时补齐异常（展示历史数据）: code=$code", e)
+        // 当日实时补齐：仅在历史同步成功入库后执行（尽力而为，实时失败不影响展示）。
+        // 历史接口定稿前补不到当日 bar，改走实时接口；历史全部失败（数据源不可达）时
+        // 实时接口同属一个数据源，不再发无谓请求。
+        if (historyOk) {
+            try {
+                KLineSync.syncRealtime(applicationContext, dbHelper, code)
+            } catch (e: Exception) {
+                AppLog.netError("实时补齐异常（展示历史数据）: code=$code", e)
+            }
         }
     }
 
