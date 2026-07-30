@@ -24,6 +24,12 @@
     <!-- K线图：极密折线模式（收盘 polyline）线条色 -->
     <color name="kline_line">#FF5C9CE6</color>
 
+    <!-- K线图十字光标：虚线与交点圆点（中灰，明暗主题均可读） -->
+    <color name="kline_cross_line">#FF8A90A0</color>
+
+    <!-- K线图十字光标坐标标签底色（深色半透明圆点 chip，白字在明暗主题均可读） -->
+    <color name="kline_cross_chip">#E63B414D</color>
+
     <!-- K线图缠论叠加：笔（黄）；本级别中枢（蓝，半透明填充+描边）；次级别中枢（橙） -->
     <color name="chan_bi">#FFF5C542</color>
     <color name="chan_zs_fill">#3842A5F5</color>

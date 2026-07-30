@@ -2,10 +2,13 @@ package lv.bingping.ausleser.ui
 
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.DashPathEffect
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.GestureDetector
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -33,6 +36,8 @@ import kotlin.math.roundToInt
  *  - 双指合拢/展开：zoom-out / zoom-in，以手指焦点处的 K 线为锚点；
  *    缩到极密时绘制自动降级：蜡烛 → 条形（仅高低竖线）→ 收盘折线，
  *    1080p 横屏一屏可看约 2900 根；
+ *  - 长按：显示十字光标——纵线吸附手指最近的 K 线（底部时间轴区显示时间标签），
+ *    横线跟随手指（右侧价格轴区显示价格标签），拖动可移动，抬手/第二指落下即隐藏；
  *  - 可见条数与右边界均带边界钳制：最新一根始终可回到右缘，最早一根不会被翻过去。
  *
  * 数据由 [setData] 一次性提供（升序），翻页/缩放只在内存窗口上移动，不再回调外部。
@@ -59,6 +64,17 @@ class KLineChartView @JvmOverloads constructor(
 
     /** 分钟级周期为 true：时间轴主格式 HH:mm，跨日显示 MM-dd。 */
     var intraday: Boolean = false
+
+    // ---------------- 十字光标（长按）状态 ----------------
+
+    /** 十字光标是否激活：长按显示，抬手或第二指落下隐藏。 */
+    private var crossActive = false
+
+    /** 纵线吸附的 K 线下标（取最近一根）。 */
+    private var crossIndex = 0
+
+    /** 横线跟随的手指 y（原始像素，绘制时按绘图区钳制）。 */
+    private var crossY = 0f
 
     // ---------------- 绘图相关 ----------------
 
@@ -121,8 +137,38 @@ class KLineChartView @JvmOverloads constructor(
         strokeWidth = 1f
     }
 
+    /** 十字光标：虚线 + 交点圆点（中灰，明暗主题均可读）。 */
+    private val crossPaint = Paint().apply {
+        color = resources.getColor(R.color.kline_cross_line, null)
+        strokeWidth = 1f
+        pathEffect = DashPathEffect(floatArrayOf(dp(4f), dp(3f)), 0f)
+    }
+    private val crossDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = resources.getColor(R.color.kline_cross_line, null)
+    }
+
+    /** 十字光标坐标标签：深色半透明圆角底 + 白字（明暗主题均可读）。 */
+    private val chipBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = resources.getColor(R.color.kline_cross_chip, null)
+    }
+    private val chipTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        textSize = dp(10f)
+        color = 0xFFFFFFFF.toInt()
+        textAlign = Paint.Align.CENTER
+    }
+
+    /** 标签 chip 尺寸（底边时间 chip 需落得进 [axisBottomH]）。 */
+    private val chipH = dp(16f)
+    private val chipCorner = dp(3f)
+    private val chipPadX = dp(6f)
+    private val chipRect = RectF()
+
     private val fmtDay = newTimeFormat("MM-dd")
     private val fmtTime = newTimeFormat("HH:mm")
+
+    /** 十字光标时间标签用完整格式：分钟级 MM-dd HH:mm，日/周级 yyyy-MM-dd。 */
+    private val fmtCrossIntraday = newTimeFormat("MM-dd HH:mm")
+    private val fmtCrossDay = newTimeFormat("yyyy-MM-dd")
 
     private val tmpDate = Date()
 
@@ -159,20 +205,69 @@ class KLineChartView @JvmOverloads constructor(
                 distanceX: Float,
                 distanceY: Float
             ): Boolean {
-                if (bars.isEmpty() || scaleDetector.isInProgress) return false
+                // 十字光标激活期间平移让位于光标移动
+                if (bars.isEmpty() || scaleDetector.isInProgress || crossActive) return false
                 rightIndex += distanceX / slotWidth()
                 clampRight()
                 invalidate()
                 return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                if (bars.isEmpty() || scaleDetector.isInProgress) return
+                enterCrosshair(e.x, e.y)
             }
         }
     )
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (bars.isEmpty()) return false
+        when (event.actionMasked) {
+            // 第二指落下：结束十字光标，交还缩放手势
+            MotionEvent.ACTION_POINTER_DOWN -> hideCrosshair()
+            MotionEvent.ACTION_MOVE ->
+                if (crossActive) {
+                    updateCrosshair(event.x, event.y)
+                    return true
+                }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                if (crossActive) {
+                    hideCrosshair()
+                    return true
+                }
+        }
         var handled = scaleDetector.onTouchEvent(event)
         handled = gestureDetector.onTouchEvent(event) || handled
         return handled || super.onTouchEvent(event)
+    }
+
+    // ---------------- 十字光标 ----------------
+
+    /** 长按进入十字光标模式：期间禁止父容器拦截触摸（保证竖向拖动只移动光标）。 */
+    private fun enterCrosshair(x: Float, y: Float) {
+        crossActive = true
+        parent?.requestDisallowInterceptTouchEvent(true)
+        performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        updateCrosshair(x, y)
+    }
+
+    private fun hideCrosshair() {
+        if (!crossActive) return
+        crossActive = false
+        parent?.requestDisallowInterceptTouchEvent(false)
+        invalidate()
+    }
+
+    /** 移动十字光标：纵线吸附手指最近的 K 线，横线跟随手指 y（均钳制在绘图区内）。 */
+    private fun updateCrosshair(x: Float, y: Float) {
+        val slotW = slotWidth()
+        val startF = rightIndex - visibleCount + 1
+        val idx = (startF + (x - paddingLeft - slotW / 2) / slotW).roundToInt()
+        val firstVis = max(0, floor(startF).toInt())
+        val lastVis = min(bars.size - 1, ceil(rightIndex).toInt())
+        crossIndex = idx.coerceIn(firstVis, lastVis)
+        crossY = y.coerceIn(paddingTop.toFloat(), paddingTop + chartH())
+        invalidate()
     }
 
     // ---------------- 对外接口 ----------------
@@ -184,6 +279,7 @@ class KLineChartView @JvmOverloads constructor(
      * @param anchorTs 不为 null 时把该时间戳所在 K 线锚定到右缘（用于屏幕旋转后恢复位置）
      */
     fun setData(newBars: List<KBar>, initialCount: Float, anchorTs: Long? = null) {
+        hideCrosshair()
         bars = newBars
         chanBi = emptyList()
         chanZs = emptyList()
@@ -341,6 +437,11 @@ class KLineChartView @JvmOverloads constructor(
         if (chanBi.isNotEmpty() || chanZs.isNotEmpty() || chanSubZs.isNotEmpty()) {
             drawChanOverlay(canvas, first, last, startF, slotW, left, top, cW, cH, maxHigh, range)
         }
+
+        // 十字光标（最上层）：仅当吸附的 K 线仍在可见区间内绘制
+        if (crossActive && crossIndex in first..last) {
+            drawCrosshair(canvas, crossIndex, crossY, startF, slotW, left, top, cW, cH, maxHigh, range)
+        }
     }
 
     /**
@@ -389,6 +490,44 @@ class KLineChartView @JvmOverloads constructor(
         canvas.restore()
     }
 
+    /**
+     * 绘制十字光标：纵线吸附手指所按 K 线（交点画圆点），横线跟随手指 y。
+     * 时间标签居中于纵线、落在底部时间轴区内（贴近左右缘时收进绘图区防出屏）；
+     * 价格标签固定在右侧价格轴区、随手指 y 上下移动（贴绘图区上下缘时收进）。
+     */
+    private fun drawCrosshair(
+        canvas: Canvas, index: Int, y: Float, startF: Float, slotW: Float,
+        left: Float, top: Float, cW: Float, cH: Float, maxHigh: Double, range: Double,
+    ) {
+        val x = left + (index - startF + 0.5f) * slotW
+        val cy = y.coerceIn(top, top + cH)
+
+        canvas.drawLine(x, top, x, top + cH, crossPaint)
+        canvas.drawLine(left, cy, left + cW, cy, crossPaint)
+        canvas.drawCircle(x, cy, dp(2.5f), crossDotPaint)
+
+        // 底部时间标签：对应纵线吸附的那根 K 线
+        val timeText = formatCrossTime(bars[index])
+        val timeW = chipTextPaint.measureText(timeText) + chipPadX * 2
+        val timeCx = x.coerceIn(left + timeW / 2, left + cW - timeW / 2)
+        drawChip(canvas, timeText, timeCx, top + cH + axisBottomH / 2, timeW)
+
+        // 右侧价格标签：由手指 y 反推当前价位
+        val price = maxHigh - (cy - top) / cH * range
+        val priceText = formatPrice(price)
+        val priceW = min(axisRightW - dp(4f), chipTextPaint.measureText(priceText) + chipPadX * 2)
+        val priceCy = cy.coerceIn(top + chipH / 2, top + cH - chipH / 2)
+        drawChip(canvas, priceText, left + cW + axisRightW / 2, priceCy, priceW)
+    }
+
+    /** 坐标标签 chip：深色半透明圆角底 + 居中白字。 */
+    private fun drawChip(canvas: Canvas, text: String, cx: Float, cy: Float, w: Float) {
+        chipRect.set(cx - w / 2, cy - chipH / 2, cx + w / 2, cy + chipH / 2)
+        canvas.drawRoundRect(chipRect, chipCorner, chipCorner, chipBgPaint)
+        val fm = chipTextPaint.fontMetrics
+        canvas.drawText(text, cx, cy - (fm.ascent + fm.descent) / 2, chipTextPaint)
+    }
+
     // ---------------- 格式化 ----------------
 
     private fun newTimeFormat(pattern: String) =
@@ -412,6 +551,12 @@ class KLineChartView @JvmOverloads constructor(
             return fmtDay.format(tmpDate)
         }
         return fmtTime.format(tmpDate)
+    }
+
+    /** 十字光标时间标签：分钟级 MM-dd HH:mm，日/周级 yyyy-MM-dd。 */
+    private fun formatCrossTime(bar: KBar): String {
+        tmpDate.time = bar.timestamp * 1000
+        return (if (intraday) fmtCrossIntraday else fmtCrossDay).format(tmpDate)
     }
 
     companion object {
