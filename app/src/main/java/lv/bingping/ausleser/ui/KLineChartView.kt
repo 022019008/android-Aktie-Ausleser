@@ -78,11 +78,15 @@ class KLineChartView @JvmOverloads constructor(
     /** 横线跟随的手指 y（原始像素，绘制时按绘图区钳制）。 */
     private var crossY = 0f
 
-    /** 光标激活期间的点按判定：按下起点 + 是否移动过（超 [touchSlop] 即算移动）。 */
+    /** 光标激活期间的点按判定：按下起点 + 是否移动过（超 [touchSlop] 即算移动）。
+     *  唤出光标的长按那一笔也视作"移动过"（见 [enterCrosshair]），防止抬手即被收起。 */
     private var crossDownX = 0f
     private var crossDownY = 0f
     private var crossMoved = false
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+
+    /** 当前是否有手指在屏幕上：用于拒绝抬手后才送达的陈旧长按回调。 */
+    private var touchInProgress = false
 
     // ---------------- 绘图相关 ----------------
 
@@ -230,16 +234,20 @@ class KLineChartView @JvmOverloads constructor(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (bars.isEmpty()) return false
+        var crossHandled = false
         when (event.actionMasked) {
             // 第二指落下：结束十字光标，交还缩放手势
             MotionEvent.ACTION_POINTER_DOWN -> hideCrosshair()
-            MotionEvent.ACTION_DOWN ->
+            MotionEvent.ACTION_DOWN -> {
+                touchInProgress = true
                 if (crossActive) {
                     // 光标留存期间的新一笔：记起点，供抬手时判定"点按即消失"
                     crossDownX = event.x
                     crossDownY = event.y
                     crossMoved = false
+                    crossHandled = true
                 }
+            }
             MotionEvent.ACTION_MOVE ->
                 if (crossActive) {
                     if (!crossMoved &&
@@ -248,29 +256,39 @@ class KLineChartView @JvmOverloads constructor(
                         crossMoved = true
                     }
                     updateCrosshair(event.x, event.y)
-                    return true
+                    crossHandled = true
                 }
-            MotionEvent.ACTION_UP ->
+            MotionEvent.ACTION_UP -> {
+                touchInProgress = false
                 if (crossActive) {
                     // 抬手不消失：仅无移动的"点按"才收起光标；移动过则保持显示
                     if (!crossMoved) hideCrosshair()
-                    return true
+                    crossHandled = true
                 }
-            MotionEvent.ACTION_CANCEL ->
-                if (crossActive) return true  // 系统打断也保持显示
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                touchInProgress = false
+                if (crossActive) crossHandled = true  // 系统打断也保持显示
+            }
         }
+        // 光标期间的 MOVE/UP 也继续喂给手势探测器：否则 GestureDetector 只见过 DOWN、
+        // 它的长按定时器会在抬手后迟到触发，把刚收起的光标又错误激活（"点按消不掉"）。
+        // 光标期间 onScroll/onLongPress 各有 crossActive 守卫，转发后均为空操作。
         var handled = scaleDetector.onTouchEvent(event)
         handled = gestureDetector.onTouchEvent(event) || handled
-        return handled || super.onTouchEvent(event)
+        return crossHandled || handled || super.onTouchEvent(event)
     }
 
     // ---------------- 十字光标 ----------------
 
     /** 长按进入十字光标模式：期间禁止父容器拦截触摸（保证竖向拖动只移动光标）。
-     * 已激活时忽略（避免光标留存期间再次长按产生重复震动/跳位）。 */
+     * 已激活时忽略（避免光标留存期间再次长按产生重复震动/跳位）；
+     * 手指已离屏时忽略（拒绝迟到触发，见 [onTouchEvent] 的转发说明）。 */
     private fun enterCrosshair(x: Float, y: Float) {
-        if (crossActive) return
+        if (crossActive || !touchInProgress) return
         crossActive = true
+        // 长按唤出光标的这一笔不是"点按"：置位 crossMoved，避免抬手时被 ACTION_UP 立刻收起
+        crossMoved = true
         parent?.requestDisallowInterceptTouchEvent(true)
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
         updateCrosshair(x, y)
@@ -300,7 +318,7 @@ class KLineChartView @JvmOverloads constructor(
     /**
      * 设置数据并复位视窗。
      *
-     * @param initialCount 初始可见条数（竖屏 50 / 横屏 100，由调用方按屏幕方向给）
+     * @param initialCount 初始可见条数（竖屏 200 / 横屏 500，由调用方按屏幕方向给；不足时按实际条数钳制）
      * @param anchorTs 不为 null 时把该时间戳所在 K 线锚定到右缘（用于屏幕旋转后恢复位置）
      */
     fun setData(newBars: List<KBar>, initialCount: Float, anchorTs: Long? = null) {
@@ -585,7 +603,7 @@ class KLineChartView @JvmOverloads constructor(
     }
 
     companion object {
-        const val DEFAULT_PORTRAIT_COUNT = 50f
-        const val DEFAULT_LANDSCAPE_COUNT = 100f
+        const val DEFAULT_PORTRAIT_COUNT = 200f
+        const val DEFAULT_LANDSCAPE_COUNT = 500f
     }
 }

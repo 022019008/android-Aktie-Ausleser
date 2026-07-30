@@ -50,7 +50,8 @@ pull 下来的库若已同步过 K 线，按下文「清空 K 线」一节处理
 
 **方式 D（现行推荐：脚本重建）**：`scripts/build-seed.ps1` 从
 `D:\Eigen\Git\Akties-Auswahl\market.db` 的 `t_eft` 表读取全部 ETF（37 只），
-从零重建种子库——分组为 `我的自选`（空）与 `ETF`，K 线表只建表不装数据，
+从零重建种子库——分组为 `我的自选`（脚本内硬编码 11 只初始自选）与 `ETF`，
+K 线表只建表不装数据，
 自动设 `user_version = 5` 并自校验（分组数 / 行数 / 空 K 线 / integrity）。
 幂等可重跑：
 

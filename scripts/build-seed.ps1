@@ -3,7 +3,7 @@
   构建打包用预置种子库（app/src/main/assets/databases/ausleser.db）。
 
   内容（v4 约定，详见 assets/databases/README.md）：
-  - 分组：我的自选（空）、ETF；
+  - 分组：我的自选（11 只初始自选，清单硬编码在 [3/5] 步）、ETF；
   - ETF 分组：Akties-Auswahl\market.db 的 t_eft 表全部 ETF（37 只）；
   - K 线表（t_k_5m / t_k_30m / t_k_60m / t_k_day）只建表不装数据——
     K 线一律由 app 运行时从网络同步（data/KLineSync.kt）；
@@ -83,11 +83,24 @@ CREATE INDEX idx_t_k_day_code_time ON t_k_day(code, timestamp);
 $schema | & $Sqlite $Out
 if ($LASTEXITCODE -ne 0) { throw "建表失败 (exit $LASTEXITCODE)" }
 
-Write-Host "[3/5] 写入分组与 ETF 自选（ATTACH 源库直接 INSERT SELECT） ..."
+Write-Host "[3/5] 写入分组与自选（我的自选硬编码清单 + ATTACH 源库导入 ETF） ..."
+# 我的自选初始清单：按此顺序入库（added_at 同为 0，列表按 id 升序即按此清单顺序显示）
 $seed = @"
 ATTACH '$($MarketDb -replace '\\','/')' AS src;
 BEGIN;
 INSERT INTO t_selber_select_group(id, name) VALUES (1, '我的自选'), (2, 'ETF');
+INSERT INTO t_selber_select_stock(group_id, code, name, added_at) VALUES
+(1, '601888', '中国中免', 0),
+(1, '000617', '中油资本', 0),
+(1, '688472', '阿特斯', 0),
+(1, '300869', '康泰医学', 0),
+(1, '300725', '药石科技', 0),
+(1, '301358', '湖南裕能', 0),
+(1, '513180', '恒生科技ETF华夏', 0),
+(1, '515120', '创新药ETF广发', 0),
+(1, '588150', '科创50ETF南方', 0),
+(1, '560580', '电力ETF南方', 0),
+(1, '688209', '英集芯', 0);
 INSERT INTO t_selber_select_stock(group_id, code, name, added_at)
 SELECT 2, code, name, 0 FROM src.t_eft ORDER BY code;
 COMMIT;
@@ -101,6 +114,7 @@ if ($LASTEXITCODE -ne 0) { throw "种子数据写入失败 (exit $LASTEXITCODE)"
 Write-Host "[4/5] 校验 ..."
 $groups  = [int](("SELECT COUNT(*) FROM t_selber_select_group;" | & $Sqlite $Out) | Select-Object -First 1)
 $stocks  = [int](("SELECT COUNT(*) FROM t_selber_select_stock;" | & $Sqlite $Out) | Select-Object -First 1)
+$mine    = [int](("SELECT COUNT(*) FROM t_selber_select_stock WHERE group_id=1;" | & $Sqlite $Out) | Select-Object -First 1)
 $k5      = [int](("SELECT COUNT(*) FROM t_k_5m;"  | & $Sqlite $Out) | Select-Object -First 1)
 $k30     = [int](("SELECT COUNT(*) FROM t_k_30m;" | & $Sqlite $Out) | Select-Object -First 1)
 $k60     = [int](("SELECT COUNT(*) FROM t_k_60m;" | & $Sqlite $Out) | Select-Object -First 1)
@@ -108,7 +122,8 @@ $kd      = [int](("SELECT COUNT(*) FROM t_k_day;" | & $Sqlite $Out) | Select-Obj
 $uv      = (("PRAGMA user_version;" | & $Sqlite $Out) | Select-Object -First 1)
 $integ   = (("PRAGMA integrity_check;" | & $Sqlite $Out) | Select-Object -First 1)
 if ($groups -ne 2)        { throw "分组数 $groups != 2" }
-if ($stocks -ne $srcCount) { throw "ETF 行数 $stocks != 源 $srcCount" }
+if ($mine -ne 11)         { throw "我的自选行数 $mine != 11" }
+if ($stocks -ne ($srcCount + 11)) { throw "自选总行数 $stocks != 源 ETF $srcCount + 我的自选 11" }
 if ($k5 + $k30 + $k60 + $kd -ne 0) { throw "K 线表必须为空（5m=$k5, 30m=$k30, 60m=$k60, day=$kd）" }
 if ($uv -ne '5')          { throw "user_version=$uv, 应为 5" }
 if ($integ -ne 'ok')      { throw "integrity_check=$integ" }
@@ -118,6 +133,6 @@ foreach ($junk in @("$Out-journal", "$Out-wal", "$Out-shm")) {
 
 Write-Host "[5/5] 完成"
 Write-Host ("      种子库: {0} ({1:N0} 字节)" -f (Resolve-Path $Out), (Get-Item $Out).Length)
-Write-Host ("      分组: 我的自选(空) + ETF({0} 只)，按代码排序，前 5 只:" -f $stocks)
-"SELECT code, name FROM t_selber_select_stock ORDER BY code LIMIT 5;" | & $Sqlite $Out |
+Write-Host ("      分组: 我的自选({0} 只) + ETF({1} 只)，我的自选清单:" -f $mine, $srcCount)
+"SELECT code, name FROM t_selber_select_stock WHERE group_id=1 ORDER BY id;" | & $Sqlite $Out |
     ForEach-Object { Write-Host "        $_" }

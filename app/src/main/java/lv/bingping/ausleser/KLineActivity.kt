@@ -231,7 +231,7 @@ class KLineActivity : AppCompatActivity() {
             else -> null
         }
 
-    /** 竖屏 50 根、横屏 100 根。 */
+    /** 竖屏 200 根、横屏 500 根。 */
     private fun defaultCount(): Float =
         if (resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
             KLineChartView.DEFAULT_PORTRAIT_COUNT

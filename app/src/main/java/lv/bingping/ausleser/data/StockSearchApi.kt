@@ -12,7 +12,7 @@ import java.net.URLEncoder
  * 东方财富搜索联想接口（searchapi.eastmoney.com），支持 代码 / 名称 / 拼音首字母。
  *
  * [search] 为阻塞式调用，必须在后台线程执行；结果映射为 [Stock] 列表。
- * 仅保留股票与基金/ETF 类别（Classify = AStock / Fund），过滤指数等品种。
+ * 仅保留 A 股（沪深主板/创业板/科创板/北A）与基金/ETF 类别，过滤指数等品种。
  * 请求、响应与失败均经 [AppLog] 输出网络日志（TAG: AusleserNet）。
  */
 object StockSearchApi {
@@ -25,8 +25,15 @@ object StockSearchApi {
     private const val CONNECT_TIMEOUT_MS = 8_000
     private const val READ_TIMEOUT_MS = 10_000
 
-    /** 保留的证券类别：A股 + 基金/ETF；指数、债券等不进候选。 */
-    private val KEEP_CLASSIFY = setOf("AStock", "Fund")
+    /**
+     * 保留的证券类别（东财联想接口 Classify 字段取值）：
+     *  - "AStock" 沪深 A 股（主板 + 创业板）
+     *  - "23"     科创板（688/689；接口对科创板返回数字类别，SecurityType=25）
+     *  - "NEEQ"   北A（8/4/920 代码段，SecurityType=27）
+     *  - "Fund"   基金/ETF
+     * 指数、债券、港股、美股等不进候选。
+     */
+    private val KEEP_CLASSIFY = setOf("AStock", "23", "NEEQ", "Fund")
 
     /**
      * 按关键字搜索候选股票。
