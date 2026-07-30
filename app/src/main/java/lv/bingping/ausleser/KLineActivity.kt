@@ -30,9 +30,11 @@ import java.util.concurrent.Executors
  * K 线图页面：展示某只股票的 K 线，右上角下拉切换周期
  * （5分钟 / 30分钟 / 60分钟 / 日线 / 周线），默认日线。
  *
- * 进入页面先经 [KLineSync.syncStock] 在后台同步该股 K 线（前复权入库，
+ * 进入页面先经 [KLineSync.syncStock] 在后台同步该股历史 K 线（前复权入库，
  * 首次下载 5m/30m 两年、60m/日线五年，其后增量补尾、除权除息时自动重建），
- * 同步失败仅提示，仍展示本地已有数据；同一页面生命周期内只同步一次。
+ * 随后 [KLineSync.syncRealtime] 按需补齐当日实时 bar（库存定稿前历史接口
+ * 不含当日数据）；同步失败仅提示，仍展示本地已有数据；同一页面生命周期内
+ * 只同步一次。
  *
  * 数据源（同步后全部读库）：
  *  - 5分钟：库表 t_k_5m；30分钟：t_k_30m；60分钟：t_k_60m
@@ -201,6 +203,12 @@ class KLineActivity : AppCompatActivity() {
                     Toast.makeText(this, R.string.kline_sync_failed, Toast.LENGTH_SHORT).show()
                 }
             }
+        }
+        // 当日实时补齐：历史接口定稿前补不到当日 bar，改走实时接口（尽力而为）
+        try {
+            KLineSync.syncRealtime(applicationContext, dbHelper, code)
+        } catch (e: Exception) {
+            AppLog.netError("实时补齐异常（展示历史数据）: code=$code", e)
         }
     }
 

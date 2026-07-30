@@ -130,4 +130,55 @@ class KLineSyncTest {
         val fetched = t.map { bar(it, 10.02) }   // +0.2% < 3e-3
         assertFalse(KLineSync.detectAdjustChange(stored, fetched))
     }
+
+    // ---------- needsRealtime / isTradingHours ----------
+
+    @Test
+    fun needsRealtime_emptyTable_isTrue() {
+        assertTrue(KLineSync.needsRealtime(null, ts(2026, 7, 28, 10, 0)))
+    }
+
+    @Test
+    fun needsRealtime_noTodayBars_isTrue() {
+        // 存量最新为昨日 → 缺当日 bar，需要实时补齐
+        assertTrue(KLineSync.needsRealtime(ts(2026, 7, 27, 15, 0), ts(2026, 7, 28, 10, 0)))
+    }
+
+    @Test
+    fun needsRealtime_hasTodayBarsFresh_isFalse() {
+        // 已有 2 分钟前的当日 bar → 不刷新
+        val now = ts(2026, 7, 28, 10, 0)
+        assertFalse(KLineSync.needsRealtime(now - 120, now))
+    }
+
+    @Test
+    fun needsRealtime_hasTodayBarsStaleInSession_isTrue() {
+        // 盘中当日 bar 已陈旧（>5 分钟）→ 刷新
+        val now = ts(2026, 7, 28, 10, 0)
+        assertTrue(KLineSync.needsRealtime(now - 400, now))
+    }
+
+    @Test
+    fun needsRealtime_staleButAfterClose_isFalse() {
+        // 收盘后不再拉实时（当晚历史同步即权威值）
+        val now = ts(2026, 7, 28, 16, 30)
+        assertFalse(KLineSync.needsRealtime(ts(2026, 7, 28, 14, 55), now))
+    }
+
+    @Test
+    fun needsRealtime_weekendWithoutTodayBars_isTrue_serverSkips() {
+        // 周六看周五的存量：本地无"当日" bar → 判为需要（App 无交易日历），
+        // 由服务端交易日历判定非交易日返回空，调用无害
+        val now = ts(2026, 8, 1, 10, 0)  // 周六
+        assertTrue(KLineSync.needsRealtime(ts(2026, 7, 31, 14, 55), now))
+    }
+
+    @Test
+    fun isTradingHours_boundaries() {
+        assertTrue(KLineSync.isTradingHours(ts(2026, 7, 28, 9, 30)))   // 周二开盘
+        assertTrue(KLineSync.isTradingHours(ts(2026, 7, 28, 15, 0)))   // 收盘
+        assertFalse(KLineSync.isTradingHours(ts(2026, 7, 28, 9, 20)))  // 盘前
+        assertFalse(KLineSync.isTradingHours(ts(2026, 7, 28, 15, 10))) // 盘后
+        assertFalse(KLineSync.isTradingHours(ts(2026, 8, 1, 10, 0)))   // 周六
+    }
 }

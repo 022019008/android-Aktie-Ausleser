@@ -12,6 +12,7 @@ import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import android.view.ViewConfiguration
 import android.os.SystemClock
 import lv.bingping.ausleser.R
 import lv.bingping.ausleser.data.ChanBi
@@ -37,7 +38,8 @@ import kotlin.math.roundToInt
  *    缩到极密时绘制自动降级：蜡烛 → 条形（仅高低竖线）→ 收盘折线，
  *    1080p 横屏一屏可看约 2900 根；
  *  - 长按：显示十字光标——纵线吸附手指最近的 K 线（底部时间轴区显示时间标签），
- *    横线跟随手指（右侧价格轴区显示价格标签），拖动可移动，抬手/第二指落下即隐藏；
+ *    横线跟随手指（右侧价格轴区显示价格标签），拖动可移动；抬手后光标保留，
+ *    再次点按（无拖动）或第二指落下（切回缩放）才消失；
  *  - 可见条数与右边界均带边界钳制：最新一根始终可回到右缘，最早一根不会被翻过去。
  *
  * 数据由 [setData] 一次性提供（升序），翻页/缩放只在内存窗口上移动，不再回调外部。
@@ -67,7 +69,7 @@ class KLineChartView @JvmOverloads constructor(
 
     // ---------------- 十字光标（长按）状态 ----------------
 
-    /** 十字光标是否激活：长按显示，抬手或第二指落下隐藏。 */
+    /** 十字光标是否激活：长按显示，抬手保留，再次点按（无拖动）或第二指落下隐藏。 */
     private var crossActive = false
 
     /** 纵线吸附的 K 线下标（取最近一根）。 */
@@ -75,6 +77,12 @@ class KLineChartView @JvmOverloads constructor(
 
     /** 横线跟随的手指 y（原始像素，绘制时按绘图区钳制）。 */
     private var crossY = 0f
+
+    /** 光标激活期间的点按判定：按下起点 + 是否移动过（超 [touchSlop] 即算移动）。 */
+    private var crossDownX = 0f
+    private var crossDownY = 0f
+    private var crossMoved = false
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
 
     // ---------------- 绘图相关 ----------------
 
@@ -225,16 +233,31 @@ class KLineChartView @JvmOverloads constructor(
         when (event.actionMasked) {
             // 第二指落下：结束十字光标，交还缩放手势
             MotionEvent.ACTION_POINTER_DOWN -> hideCrosshair()
+            MotionEvent.ACTION_DOWN ->
+                if (crossActive) {
+                    // 光标留存期间的新一笔：记起点，供抬手时判定"点按即消失"
+                    crossDownX = event.x
+                    crossDownY = event.y
+                    crossMoved = false
+                }
             MotionEvent.ACTION_MOVE ->
                 if (crossActive) {
+                    if (!crossMoved &&
+                        (abs(event.x - crossDownX) > touchSlop ||
+                         abs(event.y - crossDownY) > touchSlop)) {
+                        crossMoved = true
+                    }
                     updateCrosshair(event.x, event.y)
                     return true
                 }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+            MotionEvent.ACTION_UP ->
                 if (crossActive) {
-                    hideCrosshair()
+                    // 抬手不消失：仅无移动的"点按"才收起光标；移动过则保持显示
+                    if (!crossMoved) hideCrosshair()
                     return true
                 }
+            MotionEvent.ACTION_CANCEL ->
+                if (crossActive) return true  // 系统打断也保持显示
         }
         var handled = scaleDetector.onTouchEvent(event)
         handled = gestureDetector.onTouchEvent(event) || handled
@@ -243,8 +266,10 @@ class KLineChartView @JvmOverloads constructor(
 
     // ---------------- 十字光标 ----------------
 
-    /** 长按进入十字光标模式：期间禁止父容器拦截触摸（保证竖向拖动只移动光标）。 */
+    /** 长按进入十字光标模式：期间禁止父容器拦截触摸（保证竖向拖动只移动光标）。
+     * 已激活时忽略（避免光标留存期间再次长按产生重复震动/跳位）。 */
     private fun enterCrosshair(x: Float, y: Float) {
+        if (crossActive) return
         crossActive = true
         parent?.requestDisallowInterceptTouchEvent(true)
         performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)

@@ -52,6 +52,17 @@ object DatasourceApi {
     }
 
     /**
+     * GET /api/kline/{code}/realtime?freq= 取当日实时 bar（升序，服务端不落库）。
+     *
+     * 非交易日/无当日数据返回空列表；实时源不可用（HTTP 502 等）抛 [IOException]，
+     * 调用方回落到纯历史展示。仅当历史数据补不到当日时使用（见 [KLineSync.syncRealtime]）。
+     */
+    fun fetchKlineRealtime(ctx: Context, code: String, freq: String): List<KBar> {
+        val url = "${Settings.getBaseUrl(ctx)}/api/kline/$code/realtime?freq=$freq"
+        return fetchBars(url, "realtime code=$code freq=$freq")
+    }
+
+    /**
      * POST /api/stocks 加入跟踪；新股由服务器后台全量回填，
      * 已激活旧股秒回（幂等，可重复调用）。
      */

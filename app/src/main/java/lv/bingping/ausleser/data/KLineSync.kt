@@ -25,6 +25,11 @@ import kotlin.math.abs
  *
  * 仅当四个周期的网络拉取**全部**失败时向外抛 [IOException]；
  * 调用方（KLineActivity）提示用户后仍应展示本地已有数据。
+ *
+ * 历史同步之后另走 [syncRealtime] 当日实时补齐：库存（历史接口）在收盘定稿前
+ * 不含当日 bar，故本地补不到当日时改从数据源实时接口（/api/kline/{code}/realtime，
+ * AkShare 东财当日数据）取当日 bar 本地覆写展示；尽力而为，随后历史同步的
+ * 权威值按主键覆盖。
  */
 object KLineSync {
 
@@ -58,6 +63,9 @@ object KLineSync {
 
     /** 复权检测阈值：重叠 bar 收盘价相对差超过此值判定除权除息（只比价格、不比成交量，避免跨源误判）。 */
     private const val ADJUST_DIFF_EPS = 3e-3
+
+    /** 盘中实时刷新间隔：已有当日 bar 但距今超过该秒数（且仍在交易时段）→ 重新拉实时。 */
+    private const val REALTIME_STALE_SEC = 300
 
     /**
      * 同步一只股票的 K 线（阻塞式，必须在后台线程调用）。
@@ -109,6 +117,62 @@ object KLineSync {
 
         AppLog.net("同步结束: code=$code, 失败周期 $failures/4, 耗时 ${android.os.SystemClock.elapsedRealtime() - start}ms")
         if (failures == 4) throw IOException("K线同步全部失败: code=$code")
+    }
+
+    /**
+     * 当日实时补齐（阻塞式，后台线程调用；历史同步之后执行）。
+     *
+     * 逐频率判断本地是否缺当日数据（[needsRealtime]），缺则经数据源实时接口
+     * [DatasourceApi.fetchKlineRealtime] 取当日 bar upsert 入库（qfq 标记；
+     * 随后历史同步的收盘权威值按主键覆盖）。尽力而为：单频率失败只记日志，
+     * 不阻断其余频率、不向外抛（页面照常展示历史数据）。
+     */
+    fun syncRealtime(context: Context, db: DbHelper, code: String) {
+        val nowSec = System.currentTimeMillis() / 1000
+        val tables = listOf(
+            DbHelper.TABLE_K_5M to FREQ_5M,
+            DbHelper.TABLE_K_30M to FREQ_30M,
+            DbHelper.TABLE_K_60M to FREQ_60M,
+            DbHelper.TABLE_K_DAY to FREQ_DAY,
+        )
+        for ((table, freq) in tables) {
+            try {
+                val summary = db.kBarSummary(table, code)
+                val maxTs = summary.maxTimestamp.takeIf { summary.count > 0 }
+                if (!needsRealtime(maxTs, nowSec)) continue
+                val bars = DatasourceApi.fetchKlineRealtime(context, code, freq)
+                if (bars.isEmpty()) {
+                    AppLog.net("实时 $freq 无当日数据（非交易日或盘中无新 bar）: code=$code")
+                    continue
+                }
+                val written = db.upsertKBars(table, code, bars, ADJUST_QFQ)
+                AppLog.net("实时 $freq 补齐: code=$code, 拉取 ${bars.size} 根, 写入 $written 行")
+            } catch (e: Exception) {
+                AppLog.netError("实时补齐失败（回落历史展示）: code=$code freq=$freq", e)
+            }
+        }
+    }
+
+    /**
+     * 该频率是否需要实时补齐：
+     *  - 无当日 bar（存量最新 < 今日 0 点，或空表）→ 需要（是否交易日由服务端判定，
+     *    非交易日实时接口返回空，调用无害）；
+     *  - 已有当日 bar → 仅盘中时段且数据陈旧（超 [REALTIME_STALE_SEC]）才刷新，
+     *    收盘后不再拉（当晚历史同步即为权威定稿值）。
+     */
+    fun needsRealtime(maxTimestampSec: Long?, nowSec: Long): Boolean {
+        val todayStart = Instant.ofEpochSecond(nowSec).atZone(ZONE_BJ)
+            .toLocalDate().atStartOfDay(ZONE_BJ).toEpochSecond()
+        if (maxTimestampSec == null || maxTimestampSec < todayStart) return true
+        return isTradingHours(nowSec) && nowSec - maxTimestampSec > REALTIME_STALE_SEC
+    }
+
+    /** 交易时段判定：工作日 9:25–15:05（含盘前盘后余量；午间休市拉取无害）。 */
+    fun isTradingHours(nowSec: Long): Boolean {
+        val zdt = Instant.ofEpochSecond(nowSec).atZone(ZONE_BJ)
+        if (zdt.dayOfWeek.value > 5) return false
+        val minutes = zdt.hour * 60 + zdt.minute
+        return minutes in 9 * 60 + 25..15 * 60 + 5
     }
 
     /**
