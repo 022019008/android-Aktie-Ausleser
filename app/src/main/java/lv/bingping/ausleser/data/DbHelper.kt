@@ -48,6 +48,17 @@ class DbHelper(context: Context) :
             // v5：新增 60 分钟表（数据源 freq=60m，服务端五年窗口），由 KLineSync 运行时同步
             createKTables(db, listOf(TABLE_K_60M))
         }
+        if (oldVersion < 6) {
+            // v6：K 线表增加 is_realtime 标记列（0=历史定稿 / 1=盘中实时）。
+            // 既有行默认 0；实时补齐写 1、历史同步按主键覆盖时整行替换回 0，
+            // 复权检测重叠区只取历史行（见 [queryKBarsSince]）
+            for (table in K_TABLES) {
+                db.execSQL(
+                    "ALTER TABLE $table ADD COLUMN $COL_IS_REALTIME INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+            AppLog.db("onUpgrade: K 线表已增加 $COL_IS_REALTIME 列（v6）")
+        }
     }
 
     private fun createGroupTable(db: SQLiteDatabase) {
@@ -76,21 +87,25 @@ class DbHelper(context: Context) :
         )
     }
 
-    /** 创建 K 线表（timestamp 为 Unix 秒，adjust 存复权类型：种子库时代为 'bfq'，v4 起应用同步写入 'qfq'）。 */
+    /**
+     * 创建 K 线表（timestamp 为 Unix 秒，adjust 存复权类型：种子库时代为 'bfq'，v4 起应用同步写入 'qfq'；
+     * is_realtime 标记行来源：0=历史定稿 / 1=盘中实时，v6 起由 [upsertKBars] 写入）。
+     */
     private fun createKTables(db: SQLiteDatabase, tables: List<String>) {
         for (table in tables) {
             db.execSQL(
                 """
                 CREATE TABLE IF NOT EXISTS $table (
-                    $COL_CODE      TEXT NOT NULL,
-                    $COL_TIMESTAMP INTEGER NOT NULL,
-                    $COL_OPEN      REAL NOT NULL,
-                    $COL_HIGH      REAL NOT NULL,
-                    $COL_LOW       REAL NOT NULL,
-                    $COL_CLOSE     REAL NOT NULL,
-                    $COL_VOLUME    REAL NOT NULL,
-                    $COL_AMOUNT    REAL NOT NULL,
-                    $COL_ADJUST    TEXT NOT NULL,
+                    $COL_CODE        TEXT NOT NULL,
+                    $COL_TIMESTAMP   INTEGER NOT NULL,
+                    $COL_OPEN        REAL NOT NULL,
+                    $COL_HIGH        REAL NOT NULL,
+                    $COL_LOW         REAL NOT NULL,
+                    $COL_CLOSE       REAL NOT NULL,
+                    $COL_VOLUME      REAL NOT NULL,
+                    $COL_AMOUNT      REAL NOT NULL,
+                    $COL_ADJUST      TEXT NOT NULL,
+                    $COL_IS_REALTIME INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY($COL_CODE, $COL_TIMESTAMP)
                 )
                 """.trimIndent()
@@ -263,7 +278,11 @@ class DbHelper(context: Context) :
         return out
     }
 
-    /** 查询指定代码自 [sinceTs]（含）起的 K 线（按时间升序），供同步时取重叠区做复权检测。 */
+    /**
+     * 查询指定代码自 [sinceTs]（含）起的 K 线（按时间升序），供同步时取重叠区做复权检测。
+     * 只返回历史定稿行（is_realtime=0）：盘中实时行来自东财，其前复权基准与库存
+     * （baostock/akshare）可能存在细微差异，参与比对会误判除权除息，故复权检测排除实时行。
+     */
     fun queryKBarsSince(table: String, code: String, sinceTs: Long): List<KBar> {
         requireKTable(table)
         val start = SystemClock.elapsedRealtime()
@@ -271,7 +290,7 @@ class DbHelper(context: Context) :
         readableDatabase.query(
             table,
             K_BAR_COLUMNS,
-            "$COL_CODE=? AND $COL_TIMESTAMP>=?",
+            "$COL_CODE=? AND $COL_TIMESTAMP>=? AND $COL_IS_REALTIME=0",
             arrayOf(code, sinceTs.toString()),
             null, null,
             "$COL_TIMESTAMP ASC",
@@ -302,6 +321,33 @@ class DbHelper(context: Context) :
         return summary
     }
 
+    /**
+     * 统计指定代码在某 K 线表的**历史定稿行**存量（is_realtime=0）；无历史行返回全 0 摘要。
+     * 同步的全量/增量决策必须以此为准：仅存实时行（新股首登竞态：服务端回填未完成时
+     * 历史拉取返回空、实时行先入库）不算有存量，否则增量路径只带重叠下限根数，
+     * 历史深度永远长不回去。
+     */
+    fun kBarSummaryHistory(table: String, code: String): KBarSummary {
+        requireKTable(table)
+        val start = SystemClock.elapsedRealtime()
+        var summary = KBarSummary(0, 0L, 0L)
+        readableDatabase.rawQuery(
+            "SELECT COUNT(*), MIN($COL_TIMESTAMP), MAX($COL_TIMESTAMP) FROM $table " +
+                "WHERE $COL_CODE=? AND $COL_IS_REALTIME=0",
+            arrayOf(code)
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                summary = KBarSummary(
+                    count = cursor.getInt(0),
+                    minTimestamp = if (cursor.isNull(1)) 0L else cursor.getLong(1),
+                    maxTimestamp = if (cursor.isNull(2)) 0L else cursor.getLong(2)
+                )
+            }
+        }
+        AppLog.db("kBarSummaryHistory(table=$table, code=$code) -> $summary，耗时 ${SystemClock.elapsedRealtime() - start}ms")
+        return summary
+    }
+
     /** 指定代码在某 K 线表是否存在非前复权（adjust<>'qfq'）行（种子库 bfq 遗留）。 */
     fun hasNonQfqBars(table: String, code: String): Boolean {
         requireKTable(table)
@@ -326,10 +372,18 @@ class DbHelper(context: Context) :
     }
 
     /**
-     * 批量写入 K 线（单事务，INSERT OR REPLACE 幂等可重跑），[adjust] 记录复权类型。
-     * 返回写入条数（空列表返回 0）。
+     * 批量写入 K 线（单事务，INSERT OR REPLACE 幂等可重跑），[adjust] 记录复权类型，
+     * [isRealtime] 标记行来源（true=盘中实时 / false=历史定稿，缺省历史）。
+     * INSERT OR REPLACE 整行替换：历史同步拿到当天数据时会把同主键的实时行
+     * 连标记一并覆盖为历史（is_realtime 归 0）。返回写入条数（空列表返回 0）。
      */
-    fun upsertKBars(table: String, code: String, bars: List<KBar>, adjust: String): Int {
+    fun upsertKBars(
+        table: String,
+        code: String,
+        bars: List<KBar>,
+        adjust: String,
+        isRealtime: Boolean = false
+    ): Int {
         requireKTable(table)
         if (bars.isEmpty()) return 0
         val start = SystemClock.elapsedRealtime()
@@ -351,6 +405,7 @@ class DbHelper(context: Context) :
                         put(COL_VOLUME, bar.volume)
                         put(COL_AMOUNT, bar.amount)
                         put(COL_ADJUST, adjust)
+                        put(COL_IS_REALTIME, if (isRealtime) 1 else 0)
                     },
                     SQLiteDatabase.CONFLICT_REPLACE
                 )
@@ -360,7 +415,7 @@ class DbHelper(context: Context) :
         } finally {
             db.endTransaction()
         }
-        AppLog.db("upsertKBars(table=$table, code=$code, bars=${bars.size}, adjust=$adjust) -> 写入 $written 条，耗时 ${SystemClock.elapsedRealtime() - start}ms")
+        AppLog.db("upsertKBars(table=$table, code=$code, bars=${bars.size}, adjust=$adjust, isRealtime=$isRealtime) -> 写入 $written 条，耗时 ${SystemClock.elapsedRealtime() - start}ms")
         return written
     }
 
@@ -395,7 +450,7 @@ class DbHelper(context: Context) :
 
     companion object {
         const val DB_NAME = "ausleser.db"
-        const val DB_VERSION = 5
+        const val DB_VERSION = 6
 
         /** 单次 K 线查询上限（2 年 5 分钟约 2.3 万根，留有余量）。 */
         const val MAX_K_BARS = 25_000
@@ -430,6 +485,7 @@ class DbHelper(context: Context) :
         const val COL_VOLUME = "volume"
         const val COL_AMOUNT = "amount"
         const val COL_ADJUST = "adjust"
+        const val COL_IS_REALTIME = "is_realtime"
 
         /**
          * 首次启动时将 assets 打包的预置种子库安装到内部存储（仅当库文件尚不存在时）。

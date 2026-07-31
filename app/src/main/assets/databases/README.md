@@ -17,15 +17,17 @@
   首次下载 5m/30m 两年、60m/日线五年，之后增量补尾、除权除息自动重建）；
 - `adjust` 列语义：应用同步写入 `'qfq'`（前复权）；同步时发现非 `'qfq'`
   行（历史遗留）会清掉该股重建，故种子库不应再写入任何 K 线行。
+- `is_realtime` 列语义（v6）：0=历史定稿 / 1=盘中实时。实时补齐写 1、
+  历史同步按主键覆盖时归 0，复权检测只取历史行（`DbHelper.queryKBarsSince`）。
 
 ## 种子库要求
 
 - schema 与 `DbHelper` 当前定义完全一致（t_selber_select_group /
   t_selber_select_stock / t_k_5m / t_k_30m / t_k_60m / t_k_day 及索引）；
-- 必须设置 `PRAGMA user_version = 5`（= `DbHelper.DB_VERSION`），
+- 必须设置 `PRAGMA user_version = 6`（= `DbHelper.DB_VERSION`），
   否则 SQLiteOpenHelper 打开时会重跑 onCreate 直接崩溃
-  （旧 v3/v4 种子仍可安装：打开时 onUpgrade 会自动补建缺失的 K 线表，
-  v3 种子另会清空 bfq 遗留 K 线）；
+  （旧 v3/v4/v5 种子仍可安装：打开时 onUpgrade 会自动补建缺失的 K 线表、
+  补加 is_realtime 列，v3 种子另会清空 bfq 遗留 K 线）；
 - 只放 `ausleser.db` 本体，不能带 `-wal` / `-shm` / `-journal` 残留
   （构建完先 force-stop 应用或 `PRAGMA wal_checkpoint(TRUNCATE)`）。
 
@@ -40,8 +42,9 @@ adb exec-out run-as lv.bingping.ausleser cat databases/ausleser.db > ausleser.db
 
 pull 下来的库若已同步过 K 线，按下文「清空 K 线」一节处理后再打包。
 
-**方式 B（从零建空库）**：用 sqlite3 从零建库（schema 照抄 `DbHelper.onCreate`），
-插入默认分组与自选行，执行 `PRAGMA user_version = 5;`，默认分组需包含
+**方式 B（从零建空库）**：用 sqlite3 从零建库（schema 照抄 `DbHelper.onCreate`，
+K 线表含 v6 的 `is_realtime INTEGER NOT NULL DEFAULT 0` 列），
+插入默认分组与自选行，执行 `PRAGMA user_version = 6;`，默认分组需包含
 `我的自选` 与 `ETF`。
 
 **方式 C（已废弃，留档）**：`scripts/import-market.ps1` 曾用于从 market.db
@@ -70,7 +73,7 @@ DELETE FROM t_k_30m;
 DELETE FROM t_k_60m;
 DELETE FROM t_k_day;
 COMMIT;
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 VACUUM;
 SQL
 ```

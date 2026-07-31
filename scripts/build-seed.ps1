@@ -7,7 +7,7 @@
   - ETF 分组：Akties-Auswahl\market.db 的 t_eft 表全部 ETF（37 只）；
   - K 线表（t_k_5m / t_k_30m / t_k_60m / t_k_day）只建表不装数据——
     K 线一律由 app 运行时从网络同步（data/KLineSync.kt）；
-  - PRAGMA user_version = 5（= DbHelper.DB_VERSION）。
+  - PRAGMA user_version = 6（= DbHelper.DB_VERSION）。
 
   幂等：重跑直接覆盖旧种子库。
 .NOTES
@@ -55,6 +55,7 @@ CREATE TABLE t_k_5m (
     code TEXT NOT NULL, timestamp INTEGER NOT NULL,
     open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
     volume REAL NOT NULL, amount REAL NOT NULL, adjust TEXT NOT NULL,
+    is_realtime INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(code, timestamp)
 );
 CREATE INDEX idx_t_k_5m_code_time ON t_k_5m(code, timestamp);
@@ -62,6 +63,7 @@ CREATE TABLE t_k_30m (
     code TEXT NOT NULL, timestamp INTEGER NOT NULL,
     open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
     volume REAL NOT NULL, amount REAL NOT NULL, adjust TEXT NOT NULL,
+    is_realtime INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(code, timestamp)
 );
 CREATE INDEX idx_t_k_30m_code_time ON t_k_30m(code, timestamp);
@@ -69,6 +71,7 @@ CREATE TABLE t_k_60m (
     code TEXT NOT NULL, timestamp INTEGER NOT NULL,
     open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
     volume REAL NOT NULL, amount REAL NOT NULL, adjust TEXT NOT NULL,
+    is_realtime INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(code, timestamp)
 );
 CREATE INDEX idx_t_k_60m_code_time ON t_k_60m(code, timestamp);
@@ -76,6 +79,7 @@ CREATE TABLE t_k_day (
     code TEXT NOT NULL, timestamp INTEGER NOT NULL,
     open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
     volume REAL NOT NULL, amount REAL NOT NULL, adjust TEXT NOT NULL,
+    is_realtime INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY(code, timestamp)
 );
 CREATE INDEX idx_t_k_day_code_time ON t_k_day(code, timestamp);
@@ -105,7 +109,7 @@ INSERT INTO t_selber_select_stock(group_id, code, name, added_at)
 SELECT 2, code, name, 0 FROM src.t_eft ORDER BY code;
 COMMIT;
 DETACH src;
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 VACUUM;
 "@
 $seed | & $Sqlite $Out
@@ -125,7 +129,7 @@ if ($groups -ne 2)        { throw "分组数 $groups != 2" }
 if ($mine -ne 11)         { throw "我的自选行数 $mine != 11" }
 if ($stocks -ne ($srcCount + 11)) { throw "自选总行数 $stocks != 源 ETF $srcCount + 我的自选 11" }
 if ($k5 + $k30 + $k60 + $kd -ne 0) { throw "K 线表必须为空（5m=$k5, 30m=$k30, 60m=$k60, day=$kd）" }
-if ($uv -ne '5')          { throw "user_version=$uv, 应为 5" }
+if ($uv -ne '6')          { throw "user_version=$uv, 应为 6" }
 if ($integ -ne 'ok')      { throw "integrity_check=$integ" }
 foreach ($junk in @("$Out-journal", "$Out-wal", "$Out-shm")) {
     if (Test-Path $junk) { throw "残留边车文件 $junk" }

@@ -61,15 +61,54 @@ object KLineSynth {
      * open 取桶内首根、close 取末根、high/low 取极值、volume/amount 求和，
      * 时间戳取桶结束时刻（沿用分钟线「bar 结束时间」的约定）。
      */
-    fun to30m(bars: List<KBar>): List<KBar> {
+    fun to30m(bars: List<KBar>): List<KBar> = toSessionBars(bars, 30)
+
+    /**
+     * 由 5 分钟线合成 60 分钟线：桶边界为 10:30/11:30/14:00/15:00（每交易日 4 根），
+     * 约定与 [to30m] 相同（与东财 klt=60 的时间标签一致）。
+     */
+    fun to60m(bars: List<KBar>): List<KBar> = toSessionBars(bars, 60)
+
+    /**
+     * 由 5 分钟线合成日线：按自然日聚合，时间戳落当日 15:00（与库存日线约定一致，
+     * 实时补齐后历史同步可按主键覆盖）。open 取日内首根、close 取末根、
+     * high/low 取极值、volume/amount 求和。输入跨多个交易日时逐日各出一根。
+     */
+    fun toDay(bars: List<KBar>): List<KBar> {
+        if (bars.isEmpty()) return bars
+        val days = LinkedHashMap<Long, MutableList<KBar>>()
+        for (bar in bars) {
+            val zdt = Instant.ofEpochSecond(bar.timestamp).atZone(ZONE_BJ)
+            val key = zdt.toLocalDate().atTime(15, 0).atZone(ZONE_BJ).toEpochSecond()
+            days.getOrPut(key) { mutableListOf() }.add(bar)
+        }
+        return days.entries.map { (key, group) ->
+            KBar(
+                timestamp = key,
+                open = group.first().open,
+                high = group.maxOf { it.high },
+                low = group.minOf { it.low },
+                close = group.last().close,
+                volume = group.sumOf { it.volume },
+                amount = group.sumOf { it.amount }
+            )
+        }
+    }
+
+    /**
+     * 交易时段分桶聚合的通用实现：上午以 9:30 为基、下午（13:00 起）以 13:00 为基，
+     * 将 bar 结束时间向上取整到 [minutes] 分钟边界（与东财 klt=[minutes] 标签一致）；
+     * 时间戳取桶结束时刻，聚合规则见 [to30m]。输入须时间升序。
+     */
+    private fun toSessionBars(bars: List<KBar>, minutes: Int): List<KBar> {
         if (bars.isEmpty()) return bars
         val buckets = LinkedHashMap<Long, MutableList<KBar>>()
         for (bar in bars) {
             val zdt = Instant.ofEpochSecond(bar.timestamp).atZone(ZONE_BJ)
             val minuteOfDay = zdt.hour * 60 + zdt.minute
-            // 上午以 9:30 为基，下午（13:00 起）以 13:00 为基向上取整 30 分钟
+            // 上午以 9:30 为基，下午（13:00 起）以 13:00 为基向上取整
             val base = if (minuteOfDay >= 13 * 60) 13 * 60 else 9 * 60 + 30
-            val ceil = base + ((minuteOfDay - base + 29) / 30) * 30
+            val ceil = base + ((minuteOfDay - base + minutes - 1) / minutes) * minutes
             val key = zdt.toLocalDate().atTime(ceil / 60, ceil % 60)
                 .atZone(ZONE_BJ).toEpochSecond()
             buckets.getOrPut(key) { mutableListOf() }.add(bar)
