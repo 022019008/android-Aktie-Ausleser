@@ -77,9 +77,21 @@
                 style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
+                android:layout_marginEnd="4dp"
                 android:minWidth="0dp"
                 android:text="@string/group_manage" />
+
+            <ImageButton
+                android:id="@+id/btn_sync_group"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:layout_marginEnd="8dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/sync_group_action"
+                android:padding="8dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_sync"
+                app:tint="?attr/colorPrimary" />
         </LinearLayout>
     </com.google.android.material.appbar.AppBarLayout>
 

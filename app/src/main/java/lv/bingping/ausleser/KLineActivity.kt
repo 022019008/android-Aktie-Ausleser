@@ -62,6 +62,8 @@ class KLineActivity : AppCompatActivity() {
 
     private var code = ""
     private var name = ""
+    private var groupId = -1L
+    private var groupName = ""
 
     /** 当前周期下标（对应 R.array.kline_periods），默认日线。 */
     private var periodIndex = PERIOD_DAY
@@ -75,6 +77,8 @@ class KLineActivity : AppCompatActivity() {
 
         code = intent.getStringExtra(EXTRA_CODE).orEmpty()
         name = intent.getStringExtra(EXTRA_NAME).orEmpty()
+        groupId = intent.getLongExtra(EXTRA_GROUP_ID, -1L)
+        groupName = intent.getStringExtra(EXTRA_GROUP_NAME).orEmpty()
 
         val toolbar = findViewById<MaterialToolbar>(R.id.kline_toolbar)
         toolbar.title = name
@@ -190,7 +194,13 @@ class KLineActivity : AppCompatActivity() {
         // 兜底登记：确保服务端已跟踪该股（幂等；新股会触发服务端后台全量回填，
         // 首次打开可能尚无数据，稍后重开即有。种子库预置股也经此自动登记。）
         try {
-            DatasourceApi.registerStock(applicationContext, code, name)
+            DatasourceApi.registerStock(
+                applicationContext,
+                code,
+                name,
+                groupId.takeIf { it > 0 },
+                groupName
+            )
         } catch (e: Exception) {
             AppLog.netError("服务端登记失败（不影响本次读库）: code=$code", e)
         }
@@ -262,6 +272,8 @@ class KLineActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_CODE = "extra_code"
         const val EXTRA_NAME = "extra_name"
+        const val EXTRA_GROUP_ID = "extra_group_id"
+        const val EXTRA_GROUP_NAME = "extra_group_name"
 
         private const val KEY_PERIOD = "key_period"
         private const val KEY_COUNT = "key_count"
@@ -283,9 +295,17 @@ class KLineActivity : AppCompatActivity() {
         /** 60 分钟读库上限（五年约 4800 根，与 KLineSync.FIRST_60M 对齐）。 */
         private const val LIMIT_60M = KLineSync.FIRST_60M
 
-        fun intent(activity: android.content.Context, code: String, name: String): Intent =
+        fun intent(
+            activity: android.content.Context,
+            code: String,
+            name: String,
+            groupId: Long,
+            groupName: String
+        ): Intent =
             Intent(activity, KLineActivity::class.java)
                 .putExtra(EXTRA_CODE, code)
                 .putExtra(EXTRA_NAME, name)
+                .putExtra(EXTRA_GROUP_ID, groupId)
+                .putExtra(EXTRA_GROUP_NAME, groupName)
     }
 }

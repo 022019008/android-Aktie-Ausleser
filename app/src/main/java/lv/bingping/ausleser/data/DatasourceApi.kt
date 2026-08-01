@@ -3,6 +3,7 @@ package lv.bingping.ausleser.data
 import android.content.Context
 import android.os.SystemClock
 import lv.bingping.ausleser.util.AppLog
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -66,9 +67,18 @@ object DatasourceApi {
      * POST /api/stocks 加入跟踪；新股由服务器后台全量回填，
      * 已激活旧股秒回（幂等，可重复调用）。
      */
-    fun registerStock(ctx: Context, code: String, name: String): Boolean {
+    fun registerStock(
+        ctx: Context,
+        code: String,
+        name: String,
+        groupId: Long? = null,
+        groupName: String = ""
+    ): Boolean {
         val url = "${Settings.getBaseUrl(ctx)}/api/stocks"
         val body = JSONObject().put("code", code).put("name", name)
+        if (groupId != null) {
+            body.put("group_id", groupId).put("group_name", groupName)
+        }
         val status = sendStatus("POST", url, body)
         val ok = status in 200..299
         if (!ok) AppLog.net("registerStock 异常状态: code=$code, HTTP $status")
@@ -79,11 +89,43 @@ object DatasourceApi {
      * DELETE /api/stocks/{code} 停用跟踪（服务端保留历史数据）。
      * 该股从未跟踪（404）也视为成功。
      */
-    fun unregisterStock(ctx: Context, code: String): Boolean {
-        val url = "${Settings.getBaseUrl(ctx)}/api/stocks/$code"
+    fun unregisterStock(ctx: Context, code: String, groupId: Long? = null): Boolean {
+        val query = if (groupId == null) "" else "?group_id=$groupId"
+        val url = "${Settings.getBaseUrl(ctx)}/api/stocks/$code$query"
         val status = sendStatus("DELETE", url)
         val ok = status in 200..299 || status == HttpURLConnection.HTTP_NOT_FOUND
         if (!ok) AppLog.net("unregisterStock 异常状态: code=$code, HTTP $status")
+        return ok
+    }
+
+    /** 以当前群组对账服务端跟踪列表，并触发服务端逐成员串行同步。 */
+    fun syncGroup(
+        ctx: Context,
+        groupId: Long,
+        groupName: String,
+        stocks: List<SelectStock>
+    ): Boolean {
+        val url = "${Settings.getBaseUrl(ctx)}/api/stocks/sync-group"
+        val members = JSONArray()
+        stocks.forEach { stock ->
+            members.put(JSONObject().put("code", stock.code).put("name", stock.name))
+        }
+        val body = JSONObject()
+            .put("group_id", groupId)
+            .put("group_name", groupName)
+            .put("members", members)
+        val status = sendStatus("POST", url, body)
+        val ok = status in 200..299
+        if (!ok) AppLog.net("syncGroup 异常状态: HTTP $status")
+        return ok
+    }
+
+    /** 删除一个群组及其成员关系；仍属于其他群组的股票继续跟踪。 */
+    fun unregisterGroup(ctx: Context, groupId: Long): Boolean {
+        val url = "${Settings.getBaseUrl(ctx)}/api/stocks/groups/$groupId"
+        val status = sendStatus("DELETE", url)
+        val ok = status in 200..299 || status == HttpURLConnection.HTTP_NOT_FOUND
+        if (!ok) AppLog.net("unregisterGroup 异常状态: groupId=$groupId, HTTP $status")
         return ok
     }
 

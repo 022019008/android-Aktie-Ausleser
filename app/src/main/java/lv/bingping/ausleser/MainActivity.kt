@@ -1,10 +1,14 @@
 package lv.bingping.ausleser
 
+import android.animation.ObjectAnimator
+import android.animation.ValueAnimator
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.View
 import android.widget.Button
 import android.widget.ImageButton
 import android.widget.TextView
+import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -42,6 +46,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var btnSelberSelect: Button
     private lateinit var btnGroupManage: Button
+    private lateinit var btnSyncGroup: ImageButton
     private lateinit var subBar: View
     private lateinit var groupChipGroup: ChipGroup
 
@@ -51,6 +56,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvStocksEmpty: TextView
     private lateinit var stockAdapter: StockListAdapter
     private lateinit var swipeCallback: SwipeRevealCallback
+    private var syncAnimator: ObjectAnimator? = null
 
     /** 当前选中的分组 id，刷新分组时用于保留选中。 */
     private var selectedGroupId: Long = -1L
@@ -65,6 +71,7 @@ class MainActivity : AppCompatActivity() {
 
         btnSelberSelect = findViewById(R.id.btn_selber_select)
         btnGroupManage = findViewById(R.id.btn_group_manage)
+        btnSyncGroup = findViewById(R.id.btn_sync_group)
         subBar = findViewById(R.id.sub_bar)
         groupChipGroup = findViewById(R.id.group_chip_group)
 
@@ -103,8 +110,14 @@ class MainActivity : AppCompatActivity() {
 
         btnSelberSelect.setOnClickListener { toggleSubBar() }
         btnGroupManage.setOnClickListener {
-            GroupManageBottomSheet(this, dbHelper) { refreshGroups() }.show()
+            GroupManageBottomSheet(
+                this,
+                dbHelper,
+                onChanged = { refreshGroups() },
+                onDeleted = { group -> unregisterGroup(group.id) }
+            ).show()
         }
+        btnSyncGroup.setOnClickListener { syncCurrentGroup() }
         btnAddStock.setOnClickListener {
             if (selectedGroupId > 0) {
                 AddStockBottomSheet(this, dbHelper, selectedGroupId) { reloadStocks() }.show()
@@ -173,27 +186,88 @@ class MainActivity : AppCompatActivity() {
         tvStocksEmpty.visibility = if (stocks.isEmpty()) View.VISIBLE else View.GONE
     }
 
-    /** 从当前分组移除一只股票并刷新列表；全部分组都不再引用时通知服务端停用跟踪。 */
+    /** 对账当前群组成员，并由服务端逐成员串行同步 K 线。 */
+    private fun syncCurrentGroup() {
+        if (selectedGroupId <= 0 || syncAnimator != null) return
+        val stocks = dbHelper.queryStocks(selectedGroupId)
+        val groupName = tvStocksTitle.text.toString()
+        val animationStartedAt = SystemClock.elapsedRealtime()
+        btnSyncGroup.isEnabled = false
+        syncAnimator = ObjectAnimator.ofFloat(btnSyncGroup, View.ROTATION, 0f, 360f).apply {
+            duration = 800L
+            repeatCount = ValueAnimator.INFINITE
+            start()
+        }
+        executor.execute {
+            val ok = try {
+                DatasourceApi.syncGroup(this, selectedGroupId, groupName, stocks)
+            } catch (e: Exception) {
+                AppLog.netError("群组同步请求失败: groupId=$selectedGroupId", e)
+                false
+            }
+            runOnUiThread {
+                val remaining = (800L - (SystemClock.elapsedRealtime() - animationStartedAt))
+                    .coerceAtLeast(0L)
+                btnSyncGroup.postDelayed({
+                    stopSyncAnimation()
+                    Toast.makeText(
+                        this,
+                        if (ok) R.string.sync_group_queued else R.string.sync_group_failed,
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }, remaining)
+            }
+        }
+    }
+
+    private fun stopSyncAnimation() {
+        syncAnimator?.cancel()
+        syncAnimator = null
+        btnSyncGroup.rotation = 0f
+        btnSyncGroup.isEnabled = true
+    }
+
+    /** 从当前分组移除一只股票，并通知服务端只删除对应群组关系。 */
     private fun removeStock(stock: SelectStock) {
         dbHelper.deleteStock(stock.id)
-        if (dbHelper.countStocksByCode(stock.code) == 0) {
-            executor.execute {
-                try {
-                    DatasourceApi.unregisterStock(this, stock.code)
-                } catch (e: Exception) {
-                    AppLog.netError("服务端停用跟踪失败: code=${stock.code}", e)
-                }
+        executor.execute {
+            try {
+                DatasourceApi.unregisterStock(this, stock.code, stock.groupId)
+            } catch (e: Exception) {
+                AppLog.netError(
+                    "服务端移除群组成员失败: groupId=${stock.groupId} code=${stock.code}",
+                    e
+                )
             }
         }
         reloadStocks()
     }
 
+    private fun unregisterGroup(groupId: Long) {
+        executor.execute {
+            try {
+                DatasourceApi.unregisterGroup(this, groupId)
+            } catch (e: Exception) {
+                AppLog.netError("服务端删除群组失败: groupId=$groupId", e)
+            }
+        }
+    }
+
     /** 打开指定股票的 K 线图页面。 */
     private fun openKLine(stock: SelectStock) {
-        startActivity(KLineActivity.intent(this, stock.code, stock.name))
+        startActivity(
+            KLineActivity.intent(
+                this,
+                stock.code,
+                stock.name,
+                stock.groupId,
+                tvStocksTitle.text.toString()
+            )
+        )
     }
 
     override fun onDestroy() {
+        syncAnimator?.cancel()
         executor.shutdown()
         dbHelper.close()
         super.onDestroy()

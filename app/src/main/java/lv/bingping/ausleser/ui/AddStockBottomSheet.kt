@@ -171,7 +171,15 @@ class AddStockBottomSheet(
             // 通知服务端数据源开始跟踪该股（新股触发后台全量回填；幂等，失败不影响本地添加）
             executor.execute {
                 try {
-                    DatasourceApi.registerStock(context, stock.code, stock.name)
+                    val groupName = dbHelper.querySelectGroups()
+                        .firstOrNull { it.id == groupId }?.name.orEmpty()
+                    DatasourceApi.registerStock(
+                        context,
+                        stock.code,
+                        stock.name,
+                        groupId,
+                        groupName
+                    )
                 } catch (e: Exception) {
                     AppLog.netError("服务端登记失败: code=${stock.code}", e)
                 }
