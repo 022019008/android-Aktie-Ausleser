@@ -8,6 +8,10 @@
     <string name="sync_group_action">同步当前群组</string>
     <string name="sync_group_queued">群组成员已登记，服务端正在逐一同步</string>
     <string name="sync_group_failed">群组同步请求失败</string>
+    <string name="download_group_action">下载当前群组数据</string>
+    <string name="download_group_empty">当前群组没有成员</string>
+    <string name="download_group_done">群组数据下载完成，共 %1$d 个成员</string>
+    <string name="download_group_partial">群组数据下载完成：成功 %1$d 个，失败 %2$d 个</string>
     <string name="group_manage">群组管理</string>
     <string name="manage_groups_title">管理自选分组</string>
     <string name="add_group">添加分组</string>

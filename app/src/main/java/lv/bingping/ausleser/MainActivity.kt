@@ -17,6 +17,7 @@ import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import lv.bingping.ausleser.data.DatasourceApi
 import lv.bingping.ausleser.data.DbHelper
+import lv.bingping.ausleser.data.KLineSync
 import lv.bingping.ausleser.data.SelectStock
 import lv.bingping.ausleser.ui.AddStockBottomSheet
 import lv.bingping.ausleser.ui.GroupManageBottomSheet
@@ -47,6 +48,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnSelberSelect: Button
     private lateinit var btnGroupManage: Button
     private lateinit var btnSyncGroup: ImageButton
+    private lateinit var btnDownloadGroup: ImageButton
     private lateinit var subBar: View
     private lateinit var groupChipGroup: ChipGroup
 
@@ -72,6 +74,7 @@ class MainActivity : AppCompatActivity() {
         btnSelberSelect = findViewById(R.id.btn_selber_select)
         btnGroupManage = findViewById(R.id.btn_group_manage)
         btnSyncGroup = findViewById(R.id.btn_sync_group)
+        btnDownloadGroup = findViewById(R.id.btn_download_group)
         subBar = findViewById(R.id.sub_bar)
         groupChipGroup = findViewById(R.id.group_chip_group)
 
@@ -118,6 +121,7 @@ class MainActivity : AppCompatActivity() {
             ).show()
         }
         btnSyncGroup.setOnClickListener { syncCurrentGroup() }
+        btnDownloadGroup.setOnClickListener { downloadCurrentGroup() }
         btnAddStock.setOnClickListener {
             if (selectedGroupId > 0) {
                 AddStockBottomSheet(this, dbHelper, selectedGroupId) { reloadStocks() }.show()
@@ -193,6 +197,7 @@ class MainActivity : AppCompatActivity() {
         val groupName = tvStocksTitle.text.toString()
         val animationStartedAt = SystemClock.elapsedRealtime()
         btnSyncGroup.isEnabled = false
+        btnDownloadGroup.isEnabled = false
         syncAnimator = ObjectAnimator.ofFloat(btnSyncGroup, View.ROTATION, 0f, 360f).apply {
             duration = 800L
             repeatCount = ValueAnimator.INFINITE
@@ -225,6 +230,53 @@ class MainActivity : AppCompatActivity() {
         syncAnimator = null
         btnSyncGroup.rotation = 0f
         btnSyncGroup.isEnabled = true
+        btnDownloadGroup.isEnabled = true
+    }
+
+    /** 从数据源逐一下载当前群组全部成员的 K 线并写入 APP 数据库。 */
+    private fun downloadCurrentGroup() {
+        if (selectedGroupId <= 0 || syncAnimator != null) return
+        val stocks = dbHelper.queryStocks(selectedGroupId)
+        if (stocks.isEmpty()) {
+            Toast.makeText(this, R.string.download_group_empty, Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        btnSyncGroup.isEnabled = false
+        btnDownloadGroup.isEnabled = false
+        syncAnimator = ObjectAnimator.ofFloat(btnDownloadGroup, View.ROTATION, 0f, 360f).apply {
+            duration = 800L
+            repeatCount = ValueAnimator.INFINITE
+            start()
+        }
+        executor.execute {
+            var succeeded = 0
+            stocks.forEach { stock ->
+                try {
+                    KLineSync.syncStock(this, dbHelper, stock.code)
+                    succeeded++
+                } catch (e: Exception) {
+                    AppLog.netError("群组成员下载失败: code=${stock.code}", e)
+                }
+            }
+            val failed = stocks.size - succeeded
+            runOnUiThread {
+                syncAnimator?.cancel()
+                syncAnimator = null
+                btnDownloadGroup.rotation = 0f
+                btnSyncGroup.isEnabled = true
+                btnDownloadGroup.isEnabled = true
+                Toast.makeText(
+                    this,
+                    if (failed == 0) {
+                        getString(R.string.download_group_done, succeeded)
+                    } else {
+                        getString(R.string.download_group_partial, succeeded, failed)
+                    },
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
     }
 
     /** 从当前分组移除一只股票，并通知服务端只删除对应群组关系。 */

@@ -3,6 +3,7 @@ package lv.bingping.ausleser.data
 import android.content.Context
 import lv.bingping.ausleser.util.AppLog
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.time.Instant
 import java.time.ZoneId
 import java.util.concurrent.locks.ReentrantReadWriteLock
@@ -91,9 +92,15 @@ object KLineSync {
      * 与 [syncRealtime] 互斥（见对象说明）。
      *
      * @param context 用于读取服务器配置（[Settings]）与拼装请求地址
-     * @throws IOException 四个周期的网络拉取全部失败（本地未新增任何数据）
+     * @param fallbackOn5mTimeout 5m 请求超时时立即停止后续周期，供页面快速回落本地数据
+     * @throws IOException 四个周期的网络拉取全部失败，或启用快速回落时 5m 请求超时
      */
-    fun syncStock(context: Context, db: DbHelper, code: String) = SYNC_LOCK.read {
+    fun syncStock(
+        context: Context,
+        db: DbHelper,
+        code: String,
+        fallbackOn5mTimeout: Boolean = false
+    ) = SYNC_LOCK.read {
         val start = android.os.SystemClock.elapsedRealtime()
         val nowSec = System.currentTimeMillis() / 1000
         AppLog.net("同步开始: code=$code")
@@ -106,6 +113,7 @@ object KLineSync {
         } catch (e: IOException) {
             failures++
             AppLog.netError("同步 5m 失败: code=$code", e)
+            if (fallbackOn5mTimeout && e is SocketTimeoutException) throw e
         }
 
         try {

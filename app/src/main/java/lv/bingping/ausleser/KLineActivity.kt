@@ -206,7 +206,12 @@ class KLineActivity : AppCompatActivity() {
         }
         var historyOk = false
         try {
-            KLineSync.syncStock(applicationContext, dbHelper, code)
+            KLineSync.syncStock(
+                applicationContext,
+                dbHelper,
+                code,
+                fallbackOn5mTimeout = true
+            )
             historyOk = true
         } catch (e: Exception) {
             AppLog.netError("K线同步失败，回落本地数据: code=$code", e)
