@@ -14,9 +14,6 @@
     <!-- 左滑删除操作区底色 -->
     <color name="stock_delete">#FFE53935</color>
 
-    <!-- 左滑同步按钮底色 -->
-    <color name="stock_sync">#FF1E88E5</color>
-
     <!-- K线图：红涨绿跌（国内习惯） -->
     <color name="kline_up">#FFE04545</color>
     <color name="kline_down">#FF2E9E5B</color>

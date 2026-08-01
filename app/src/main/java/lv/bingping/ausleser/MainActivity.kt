@@ -1,13 +1,10 @@
 package lv.bingping.ausleser
 
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.view.View
 import android.widget.Button
 import android.widget.ImageButton
 import android.widget.TextView
-import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -16,7 +13,6 @@ import com.google.android.material.chip.Chip
 import com.google.android.material.chip.ChipGroup
 import lv.bingping.ausleser.data.DatasourceApi
 import lv.bingping.ausleser.data.DbHelper
-import lv.bingping.ausleser.data.KLineSync
 import lv.bingping.ausleser.data.SelectStock
 import lv.bingping.ausleser.ui.AddStockBottomSheet
 import lv.bingping.ausleser.ui.GroupManageBottomSheet
@@ -41,9 +37,8 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var dbHelper: DbHelper
 
-    /** 网络操作（同步请求、服务端登记）用后台线程，模式同 KLineActivity。 */
+    /** 网络操作（服务端登记 / 停用跟踪）用后台线程，模式同 KLineActivity。 */
     private val executor = Executors.newSingleThreadExecutor()
-    private val mainHandler = Handler(Looper.getMainLooper())
 
     private lateinit var btnSelberSelect: Button
     private lateinit var btnGroupManage: Button
@@ -59,9 +54,6 @@ class MainActivity : AppCompatActivity() {
 
     /** 当前选中的分组 id，刷新分组时用于保留选中。 */
     private var selectedGroupId: Long = -1L
-
-    /** 正在后台同步 K 线的股票代码（主线程访问），防重复点击。 */
-    private val syncingCodes = mutableSetOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -83,8 +75,6 @@ class MainActivity : AppCompatActivity() {
 
         stockAdapter = StockListAdapter(
             onDelete = { stock -> removeStock(stock) },
-            // 同步按钮：后台补全该股本地 K 线（先服务端登记再拉取，结果 Toast 提示）
-            onSync = { stock -> syncStockNow(stock) },
             onClick = { stock -> openKLine(stock) }
         )
         rvStocks.layoutManager = LinearLayoutManager(this)
@@ -196,42 +186,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
         reloadStocks()
-    }
-
-    /**
-     * 同步按钮：后台补全该股本地 K 线（与进入 K 线页同一套 [KLineSync.syncStock]：
-     * 先向服务端登记，再按频率拉取入库，含复权检测与首次全量策略）。
-     * 结果回主线程 Toast；同一只股票同步进行中时忽略重复点击。
-     */
-    private fun syncStockNow(stock: SelectStock) {
-        if (!syncingCodes.add(stock.code)) {
-            Toast.makeText(this, getString(R.string.sync_in_progress, stock.name),
-                Toast.LENGTH_SHORT).show()
-            return
-        }
-        Toast.makeText(this, getString(R.string.sync_in_progress, stock.name),
-            Toast.LENGTH_SHORT).show()
-        executor.execute {
-            val ok = try {
-                DatasourceApi.registerStock(applicationContext, stock.code, stock.name)
-                KLineSync.syncStock(applicationContext, dbHelper, stock.code)
-                true
-            } catch (e: Exception) {
-                AppLog.netError("K线同步失败: code=${stock.code}", e)
-                false
-            }
-            mainHandler.post {
-                syncingCodes.remove(stock.code)
-                if (!isDestroyed) {
-                    Toast.makeText(
-                        this,
-                        if (ok) getString(R.string.sync_complete, stock.name)
-                        else getString(R.string.sync_failed),
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }
-        }
     }
 
     /** 打开指定股票的 K 线图页面。 */

@@ -11,10 +11,9 @@ import lv.bingping.ausleser.R
 import lv.bingping.ausleser.data.SelectStock
 import lv.bingping.ausleser.data.Stock
 
-/** 当前分组已添加股票的列表适配器。左滑揭示“同步 / 删除”两个操作按钮，整行点击进入 K 线图。 */
+/** 当前分组已添加股票的列表适配器。左滑揭示“删除”操作按钮，整行点击进入 K 线图。 */
 class StockListAdapter(
     private val onDelete: (SelectStock) -> Unit,
-    private val onSync: (SelectStock) -> Unit,
     private val onClick: (SelectStock) -> Unit
 ) : RecyclerView.Adapter<StockListAdapter.VH>() {
 
@@ -34,7 +33,6 @@ class StockListAdapter(
         holder.code.text = stock.code
         holder.name.text = stock.name
         holder.delete.setOnClickListener { onDelete(stock) }
-        holder.sync.setOnClickListener { onSync(stock) }
         holder.itemView.setOnClickListener { onClick(stock) }
         // 复用 / 重绑时复位滑动状态，避免残留展开
         (holder.itemView as SwipeRevealLayout).setOffset(0f)
@@ -45,7 +43,6 @@ class StockListAdapter(
     class VH(v: View) : RecyclerView.ViewHolder(v) {
         val code: TextView = v.findViewById(R.id.tv_stock_code)
         val name: TextView = v.findViewById(R.id.tv_stock_name)
-        val sync: ImageButton = v.findViewById(R.id.btn_sync_stock)
         val delete: ImageButton = v.findViewById(R.id.btn_delete_stock)
     }
 }

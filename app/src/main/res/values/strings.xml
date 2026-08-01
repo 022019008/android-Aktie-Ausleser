@@ -15,7 +15,6 @@
     <string name="action_ok">确定</string>
     <string name="action_cancel">取消</string>
     <string name="action_delete">删除</string>
-    <string name="action_sync">同步</string>
 
     <!-- 自选股票列表 / 搜索添加 -->
     <string name="add_stock_action">添加自选</string>
@@ -44,9 +43,6 @@
     </string-array>
 
     <!-- 服务器设置 -->
-    <string name="sync_in_progress">正在同步：%1$s</string>
-    <string name="sync_complete">同步完成：%1$s</string>
-    <string name="sync_failed">同步失败</string>
     <string name="settings_action">服务器设置</string>
     <string name="settings_title">服务器设置</string>
     <string name="server_ip_hint">服务器 IP 地址</string>

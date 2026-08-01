@@ -51,16 +51,6 @@
         android:orientation="horizontal">
 
         <ImageButton
-            android:id="@+id/btn_sync_stock"
-            android:layout_width="72dp"
-            android:layout_height="match_parent"
-            android:background="@drawable/bg_action_sync"
-            android:contentDescription="@string/action_sync"
-            android:scaleType="centerInside"
-            android:src="@drawable/ic_sync"
-            app:tint="@color/white" />
-
-        <ImageButton
             android:id="@+id/btn_delete_stock"
             android:layout_width="72dp"
             android:layout_height="match_parent"
