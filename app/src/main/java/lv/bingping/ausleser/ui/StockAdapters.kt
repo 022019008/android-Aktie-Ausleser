@@ -33,7 +33,10 @@ class MemberListAdapter(
         holder.code.text = member.code
         holder.name.text = member.name
         holder.delete.setOnClickListener { onDelete(member) }
-        holder.itemView.setOnClickListener { onClick(member) }
+        holder.itemView.setOnClickListener {
+            val row = it as SwipeRevealLayout
+            if (row.isClosed()) onClick(member)
+        }
         // 复用 / 重绑时复位滑动状态，避免残留展开
         (holder.itemView as SwipeRevealLayout).setOffset(0f)
     }

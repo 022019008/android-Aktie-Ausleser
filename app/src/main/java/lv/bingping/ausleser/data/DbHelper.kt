@@ -60,7 +60,7 @@ class DbHelper(context: Context) :
             AppLog.db("onUpgrade: K 线表已增加 $COL_IS_REALTIME 列（v6）")
         }
         if (oldVersion < 7) {
-            db.execSQL("ALTER TABLE t_selber_select_member RENAME TO $TABLE_SELECT_MEMBER")
+            db.execSQL("ALTER TABLE t_selber_select_stock RENAME TO $TABLE_SELECT_MEMBER")
             AppLog.db("onUpgrade: 自选成员表已重命名为 $TABLE_SELECT_MEMBER（v7）")
         }
     }
