@@ -31,6 +31,7 @@ object DatasourceApi {
 
     private const val CONNECT_TIMEOUT_MS = 8_000
     private const val READ_TIMEOUT_MS = 10_000
+    private const val GROUP_SYNC_POLL_INTERVAL_MS = 1_000L
 
     /** GET /health 健康检查；HTTP 200 视为可达。[baseUrl] 形如 http://192.168.1.100:8000 。 */
     fun health(baseUrl: String): Boolean =
@@ -133,34 +134,21 @@ object DatasourceApi {
         }
     }
 
-    /** 监听群组同步 SSE，收到 completed / failed / cancelled 后返回。 */
+    /** 轮询群组同步状态；单次请求超时会直接终止轮询。 */
     fun awaitGroupSync(ctx: Context, taskId: String): GroupSyncStatus {
-        val url = "${Settings.getBaseUrl(ctx)}/api/members/sync-tasks/$taskId/events"
-        val conn = openConnection(url, "GET").apply {
-            readTimeout = 0
-            setRequestProperty("Accept", "text/event-stream")
-        }
-        try {
-            val status = conn.responseCode
-            if (status != HttpURLConnection.HTTP_OK) throw IOException("HTTP $status")
-            conn.inputStream.bufferedReader().useLines { lines ->
-                lines.forEach { line ->
-                    if (!line.startsWith("data:")) return@forEach
-                    val payload = JSONObject(line.removePrefix("data:").trim())
-                    val taskStatus = payload.optString("status")
-                    if (taskStatus in setOf("completed", "failed", "cancelled")) {
-                        return GroupSyncStatus(
-                            status = taskStatus,
-                            total = payload.optInt("total"),
-                            completed = payload.optInt("completed"),
-                            failed = payload.optInt("failed")
-                        )
-                    }
-                }
+        val url = "${Settings.getBaseUrl(ctx)}/api/members/sync-tasks/$taskId"
+        while (true) {
+            val payload = JSONObject(getBody(url))
+            when (payload.optString("status")) {
+                "pending" -> Thread.sleep(GROUP_SYNC_POLL_INTERVAL_MS)
+                "success" -> return GroupSyncStatus(
+                    status = payload.getString("task_status"),
+                    total = payload.optInt("total"),
+                    completed = payload.optInt("completed"),
+                    failed = payload.optInt("failed")
+                )
+                else -> throw IOException("未知同步任务状态")
             }
-            throw IOException("同步事件流在终态前关闭")
-        } finally {
-            conn.disconnect()
         }
     }
 
