@@ -11,7 +11,7 @@ import java.time.ZonedDateTime
 
 /**
  * [KLineSync] 纯逻辑 JVM 单测：交易日估算、增量拉取量计算、复权检测。
- * （涉及 DB/网络的 syncStock 编排由模拟器端到端验证。）
+ * （涉及 DB/网络的 syncMember 编排由模拟器端到端验证。）
  */
 class KLineSyncTest {
 

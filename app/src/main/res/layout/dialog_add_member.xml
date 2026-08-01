@@ -20,7 +20,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:hint="@string/search_stock_hint"
+            android:hint="@string/search_member_hint"
             android:imeOptions="actionSearch"
             android:inputType="text"
             android:maxLines="1"
@@ -56,8 +56,8 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:text="@string/no_search_result"
-            android:textSize="14sp"
             android:textColor="?attr/colorOnSurface"
+            android:textSize="14sp"
             android:visibility="gone" />
     </FrameLayout>
 </LinearLayout>

@@ -7,7 +7,7 @@
     android:fitsSystemWindows="true"
     android:orientation="vertical">
 
-    <!-- 顶栏：标题=股票名称，副标题=代码，右上角周期下拉（菜单内 Spinner） -->
+    <!-- 顶栏：标题=成员名称，副标题=代码，右上角周期下拉（菜单内 Spinner） -->
     <com.google.android.material.appbar.MaterialToolbar
         android:id="@+id/kline_toolbar"
         android:layout_width="match_parent"

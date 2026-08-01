@@ -67,7 +67,7 @@ object DatasourceApi {
     * POST /api/members 加入跟踪；新股由服务器后台全量回填，
      * 已激活旧股秒回（幂等，可重复调用）。
      */
-    fun registerStock(
+    fun registerMember(
         ctx: Context,
         code: String,
         name: String,
@@ -81,7 +81,7 @@ object DatasourceApi {
         }
         val status = sendStatus("POST", url, body)
         val ok = status in 200..299
-        if (!ok) AppLog.net("registerStock 异常状态: code=$code, HTTP $status")
+        if (!ok) AppLog.net("registerMember 异常状态: code=$code, HTTP $status")
         return ok
     }
 
@@ -89,12 +89,12 @@ object DatasourceApi {
     * DELETE /api/members/{code} 停用跟踪（服务端保留历史数据）。
      * 该股从未跟踪（404）也视为成功。
      */
-    fun unregisterStock(ctx: Context, code: String, groupId: Long? = null): Boolean {
+    fun unregisterMember(ctx: Context, code: String, groupId: Long? = null): Boolean {
         val query = if (groupId == null) "" else "?group_id=$groupId"
         val url = "${Settings.getBaseUrl(ctx)}/api/members/$code$query"
         val status = sendStatus("DELETE", url)
         val ok = status in 200..299 || status == HttpURLConnection.HTTP_NOT_FOUND
-        if (!ok) AppLog.net("unregisterStock 异常状态: code=$code, HTTP $status")
+        if (!ok) AppLog.net("unregisterMember 异常状态: code=$code, HTTP $status")
         return ok
     }
 
@@ -103,12 +103,12 @@ object DatasourceApi {
         ctx: Context,
         groupId: Long,
         groupName: String,
-        stocks: List<SelectStock>
+        membersInGroup: List<SelectMember>
     ): Boolean {
         val url = "${Settings.getBaseUrl(ctx)}/api/members/sync-group"
         val members = JSONArray()
-        stocks.forEach { stock ->
-            members.put(JSONObject().put("code", stock.code).put("name", stock.name))
+        membersInGroup.forEach { member ->
+            members.put(JSONObject().put("code", member.code).put("name", member.name))
         }
         val body = JSONObject()
             .put("group_id", groupId)
@@ -120,7 +120,7 @@ object DatasourceApi {
         return ok
     }
 
-    /** 删除一个群组及其成员关系；仍属于其他群组的股票继续跟踪。 */
+    /** 删除一个群组及其成员关系；仍属于其他群组的成员继续跟踪。 */
     fun unregisterGroup(ctx: Context, groupId: Long): Boolean {
         val url = "${Settings.getBaseUrl(ctx)}/api/members/groups/$groupId"
         val status = sendStatus("DELETE", url)

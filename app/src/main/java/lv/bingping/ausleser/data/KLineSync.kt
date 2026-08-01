@@ -12,7 +12,7 @@ import kotlin.concurrent.write
 import kotlin.math.abs
 
 /**
- * 个股 K 线同步编排：打开 K 线页时在后台线程调用 [syncStock]，
+ * 个股 K 线同步编排：打开 K 线页时在后台线程调用 [syncMember]，
  * 使本地 t_k_5m / t_k_30m / t_k_60m / t_k_day 保持最新，入库一律前复权（adjust=[ADJUST_QFQ]）。
  *
  * 数据来源为自建数据源 Aktie_datasource（[DatasourceApi]，freq=5m/30m/60m/day），
@@ -47,7 +47,7 @@ import kotlin.math.abs
 object KLineSync {
 
     /**
-     * 进程级同步锁：[syncStock] 持读锁、[syncRealtime] 持写锁。
+    * 进程级同步锁：[syncMember] 持读锁、[syncRealtime] 持写锁。
      * 多路历史同步互不阻塞；实时补齐与任何在途历史同步互斥，
      * 即实时请求只会在全部历史请求完成入库之后才开始。
      */
@@ -88,14 +88,14 @@ object KLineSync {
     private const val REALTIME_STALE_SEC = 300
 
     /**
-     * 同步一只股票的 K 线（阻塞式，必须在后台线程调用）；持 [SYNC_LOCK] 读锁，
+     * 同步一只成员的 K 线（阻塞式，必须在后台线程调用）；持 [SYNC_LOCK] 读锁，
      * 与 [syncRealtime] 互斥（见对象说明）。
      *
      * @param context 用于读取服务器配置（[Settings]）与拼装请求地址
      * @param fallbackOn5mTimeout 5m 请求超时时立即停止后续周期，供页面快速回落本地数据
      * @throws IOException 四个周期的网络拉取全部失败，或启用快速回落时 5m 请求超时
      */
-    fun syncStock(
+    fun syncMember(
         context: Context,
         db: DbHelper,
         code: String,
@@ -151,7 +151,7 @@ object KLineSync {
      * 当日实时补齐（阻塞式，后台线程调用）。
      *
      * 编排约束：仅在历史同步成功入库之后由调用方触发（见 KLineActivity.ensureSynced）；
-     * 持 [SYNC_LOCK] 写锁——等待所有在途 [syncStock] 历史请求完成入库后才开始，
+    * 持 [SYNC_LOCK] 写锁——等待所有在途 [syncMember] 历史请求完成入库后才开始，
      * 期间也不允许新的历史同步插入，两类数据源请求绝不并行。
      *
      * 实时数据只请求 5 分钟一个频率：以 5m 表的 [needsRealtime] 把关，缺当日

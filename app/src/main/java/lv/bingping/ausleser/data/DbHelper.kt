@@ -27,13 +27,13 @@ class DbHelper(context: Context) :
     override fun onCreate(db: SQLiteDatabase) {
         AppLog.db("onCreate: 新建库 $DB_NAME v$DB_VERSION（分组表/自选表/K线表）")
         createGroupTable(db)
-        createStockTable(db)
+        createMemberTable(db)
         createKTables(db, K_TABLES)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         AppLog.db("onUpgrade: $DB_NAME 版本升级 v$oldVersion -> v$newVersion")
-        if (oldVersion < 2) createStockTable(db)
+        if (oldVersion < 2) createMemberTable(db)
         if (oldVersion < 3) createKTables(db, listOf(TABLE_K_5M, TABLE_K_DAY))
         if (oldVersion < 4) {
             // v4：新增 30 分钟表；K 线一律改由 app 运行时网络同步（前复权），
@@ -59,6 +59,10 @@ class DbHelper(context: Context) :
             }
             AppLog.db("onUpgrade: K 线表已增加 $COL_IS_REALTIME 列（v6）")
         }
+        if (oldVersion < 7) {
+            db.execSQL("ALTER TABLE t_selber_select_stock RENAME TO $TABLE_SELECT_MEMBER")
+            AppLog.db("onUpgrade: 自选成员表已重命名为 $TABLE_SELECT_MEMBER（v7）")
+        }
     }
 
     private fun createGroupTable(db: SQLiteDatabase) {
@@ -72,10 +76,10 @@ class DbHelper(context: Context) :
         )
     }
 
-    private fun createStockTable(db: SQLiteDatabase) {
+    private fun createMemberTable(db: SQLiteDatabase) {
         db.execSQL(
             """
-            CREATE TABLE IF NOT EXISTS $TABLE_SELECT_STOCK (
+            CREATE TABLE IF NOT EXISTS $TABLE_SELECT_MEMBER (
                 $COLUMN_ID    INTEGER PRIMARY KEY AUTOINCREMENT,
                 $COL_GROUP_ID INTEGER NOT NULL,
                 $COL_CODE     TEXT NOT NULL,
@@ -175,12 +179,12 @@ class DbHelper(context: Context) :
         return rows
     }
 
-    /** 查询指定分组下全部自选股票（按加入时间升序）。 */
-    fun queryStocks(groupId: Long): List<SelectStock> {
+    /** 查询指定分组下全部自选成员（按加入时间升序）。 */
+    fun queryMembers(groupId: Long): List<SelectMember> {
         val start = SystemClock.elapsedRealtime()
-        val list = mutableListOf<SelectStock>()
+        val list = mutableListOf<SelectMember>()
         readableDatabase.query(
-            TABLE_SELECT_STOCK,
+            TABLE_SELECT_MEMBER,
             arrayOf(COLUMN_ID, COL_GROUP_ID, COL_CODE, COLUMN_NAME),
             "$COL_GROUP_ID=?",
             arrayOf(groupId.toString()),
@@ -193,7 +197,7 @@ class DbHelper(context: Context) :
             val nameIndex = cursor.getColumnIndexOrThrow(COLUMN_NAME)
             while (cursor.moveToNext()) {
                 list.add(
-                    SelectStock(
+                    SelectMember(
                         id = cursor.getLong(idIndex),
                         groupId = cursor.getLong(gidIndex),
                         code = cursor.getString(codeIndex),
@@ -202,21 +206,21 @@ class DbHelper(context: Context) :
                 )
             }
         }
-        AppLog.db("queryStocks(groupId=$groupId) -> ${list.size} 只股票，耗时 ${SystemClock.elapsedRealtime() - start}ms")
+        AppLog.db("queryMembers(groupId=$groupId) -> ${list.size} 个成员，耗时 ${SystemClock.elapsedRealtime() - start}ms")
         return list
     }
 
-    /** 查询指定分组已包含的股票代码集合（用于搜索弹层标记“已添加”）。 */
-    fun queryStockCodes(groupId: Long): Set<String> {
-        val codes = queryStocks(groupId).map { it.code }.toSet()
-        AppLog.db("queryStockCodes(groupId=$groupId) -> ${codes.size} 个代码")
+    /** 查询指定分组已包含的成员代码集合（用于搜索弹层标记“已添加”）。 */
+    fun queryMemberCodes(groupId: Long): Set<String> {
+        val codes = queryMembers(groupId).map { it.code }.toSet()
+        AppLog.db("queryMemberCodes(groupId=$groupId) -> ${codes.size} 个代码")
         return codes
     }
 
-    /** 将股票加入指定分组；同组同代码已存在时忽略，返回 -1。 */
-    fun insertStock(groupId: Long, code: String, name: String): Long {
+    /** 将成员加入指定分组；同组同代码已存在时忽略，返回 -1。 */
+    fun insertMember(groupId: Long, code: String, name: String): Long {
         val rowId = writableDatabase.insertWithOnConflict(
-            TABLE_SELECT_STOCK,
+            TABLE_SELECT_MEMBER,
             null,
             ContentValues().apply {
                 put(COL_GROUP_ID, groupId)
@@ -227,27 +231,27 @@ class DbHelper(context: Context) :
             SQLiteDatabase.CONFLICT_IGNORE
         )
         AppLog.db(
-            "insertStock(groupId=$groupId, code=$code, name=$name) -> " +
+            "insertMember(groupId=$groupId, code=$code, name=$name) -> " +
                 if (rowId == -1L) "忽略（同组同代码已存在）" else "rowId=$rowId"
         )
         return rowId
     }
 
-    /** 从自选移除指定股票行。 */
-    fun deleteStock(id: Long): Int {
+    /** 从自选移除指定成员行。 */
+    fun deleteMember(id: Long): Int {
         val rows = writableDatabase.delete(
-            TABLE_SELECT_STOCK,
+            TABLE_SELECT_MEMBER,
             "$COLUMN_ID=?",
             arrayOf(id.toString())
         )
-        AppLog.db("deleteStock(id=$id) -> 影响 $rows 行")
+        AppLog.db("deleteMember(id=$id) -> 影响 $rows 行")
         return rows
     }
 
     /** 该代码在全部分组中占用的行数（删股时判断是否仍被其他分组引用）。 */
-    fun countStocksByCode(code: String): Int {
+    fun countMembersByCode(code: String): Int {
         readableDatabase.rawQuery(
-            "SELECT COUNT(*) FROM $TABLE_SELECT_STOCK WHERE $COL_CODE=?",
+            "SELECT COUNT(*) FROM $TABLE_SELECT_MEMBER WHERE $COL_CODE=?",
             arrayOf(code)
         ).use { cursor ->
             return if (cursor.moveToFirst()) cursor.getInt(0) else 0
@@ -450,7 +454,7 @@ class DbHelper(context: Context) :
 
     companion object {
         const val DB_NAME = "ausleser.db"
-        const val DB_VERSION = 6
+        const val DB_VERSION = 7
 
         /** 单次 K 线查询上限（2 年 5 分钟约 2.3 万根，留有余量）。 */
         const val MAX_K_BARS = 25_000
@@ -459,7 +463,7 @@ class DbHelper(context: Context) :
         private const val ASSET_DB_PATH = "databases/$DB_NAME"
 
         const val TABLE_SELECT_GROUP = "t_selber_select_group"
-        const val TABLE_SELECT_STOCK = "t_selber_select_stock"
+        const val TABLE_SELECT_MEMBER = "t_selber_select_member"
         const val TABLE_K_5M = "t_k_5m"
         const val TABLE_K_30M = "t_k_30m"
         const val TABLE_K_60M = "t_k_60m"

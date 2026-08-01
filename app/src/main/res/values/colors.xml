@@ -9,10 +9,10 @@
     <color name="white">#FFFFFFFF</color>
 
     <!-- 搜索列表“已添加”状态文字色（中性灰，明暗主题均可读） -->
-    <color name="stock_added">#FF9E9E9E</color>
+    <color name="member_added">#FF9E9E9E</color>
 
     <!-- 左滑删除操作区底色 -->
-    <color name="stock_delete">#FFE53935</color>
+    <color name="member_delete">#FFE53935</color>
 
     <!-- K线图：红涨绿跌（国内习惯） -->
     <color name="kline_up">#FFE04545</color>

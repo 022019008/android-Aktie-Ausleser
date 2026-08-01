@@ -2,7 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- 东方财富搜索联想接口（股票搜索）/ 自建数据源 Aktie_datasource -->
+    <!-- 东方财富搜索联想接口（ 成员搜索）/ 自建数据源 Aktie_datasource -->
     <uses-permission android:name="android.permission.INTERNET" />
 
     <application

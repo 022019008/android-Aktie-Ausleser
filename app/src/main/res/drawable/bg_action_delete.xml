@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- 删除按钮底色 + 点击波纹 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@color/stock_delete" />
+    <item android:drawable="@color/member_delete" />
     <item android:drawable="?attr/selectableItemBackground" />
 </layer-list>

@@ -7,6 +7,8 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
@@ -25,12 +27,13 @@ import lv.bingping.ausleser.data.KLineSynth
 import lv.bingping.ausleser.ui.KLineChartView
 import lv.bingping.ausleser.util.AppLog
 import java.util.concurrent.Executors
+import kotlin.math.abs
 
 /**
- * K 线图页面：展示某只股票的 K 线，右上角下拉切换周期
+ * K 线图页面：展示某只成员的 K 线，右上角下拉切换周期
  * （5分钟 / 30分钟 / 60分钟 / 日线 / 周线），默认日线。
  *
- * 进入页面先经 [KLineSync.syncStock] 在后台同步该股历史 K 线（前复权入库，
+ * 进入页面先经 [KLineSync.syncMember] 在后台同步该股历史 K 线（前复权入库，
  * 首次下载 5m/30m 两年、60m/日线五年，其后增量补尾、除权除息时自动重建），
  * 历史同步成功入库后再经 [KLineSync.syncRealtime] 按需补齐当日实时 bar
  * （库存定稿前历史接口不含当日数据；历史全部失败则跳过实时请求）；
@@ -51,6 +54,7 @@ import java.util.concurrent.Executors
 class KLineActivity : AppCompatActivity() {
 
     private lateinit var dbHelper: DbHelper
+    private lateinit var toolbar: MaterialToolbar
     private lateinit var chart: KLineChartView
     private lateinit var emptyView: TextView
 
@@ -58,6 +62,7 @@ class KLineActivity : AppCompatActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /** 加载序号，切换周期时丢弃过期结果。 */
+    @Volatile
     private var loadSeq = 0
 
     private var code = ""
@@ -68,8 +73,8 @@ class KLineActivity : AppCompatActivity() {
     /** 当前周期下标（对应 R.array.kline_periods），默认日线。 */
     private var periodIndex = PERIOD_DAY
 
-    /** 本页生命周期内是否已同步过（旋转后经 savedInstanceState 保留，避免重复拉取）。 */
-    private var synced = false
+    /** 本页生命周期内已同步过的成员代码，切回时避免重复拉取。 */
+    private val syncedCodes = mutableSetOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,9 +85,13 @@ class KLineActivity : AppCompatActivity() {
         groupId = intent.getLongExtra(EXTRA_GROUP_ID, -1L)
         groupName = intent.getStringExtra(EXTRA_GROUP_NAME).orEmpty()
 
-        val toolbar = findViewById<MaterialToolbar>(R.id.kline_toolbar)
-        toolbar.title = name
-        toolbar.subtitle = code
+        savedInstanceState?.let { state ->
+            code = state.getString(KEY_CODE, code)
+            name = state.getString(KEY_NAME, name)
+        }
+
+        toolbar = findViewById(R.id.kline_toolbar)
+        updateToolbarTitle()
         toolbar.setNavigationOnClickListener { finish() }
 
         chart = findViewById(R.id.kline_chart)
@@ -97,11 +106,63 @@ class KLineActivity : AppCompatActivity() {
             periodIndex = s.getInt(KEY_PERIOD, PERIOD_DAY)
             restoredCount = s.getFloat(KEY_COUNT, 0f).takeIf { it > 0f }
             restoredAnchor = s.getLong(KEY_ANCHOR, -1L).takeIf { it > 0L }
-            synced = s.getBoolean(KEY_SYNCED, false)
+            if (s.getBoolean(KEY_SYNCED, false)) syncedCodes.add(code)
         }
 
         setupPeriodSpinner(toolbar)
+        setupMemberSwipe(toolbar)
         reload(anchorTs = restoredAnchor, count = restoredCount)
+    }
+
+    /** 在顶栏左右滑动，按当前群组列表顺序切换上一只/下一只成员。 */
+    private fun setupMemberSwipe(toolbar: MaterialToolbar) {
+        val minDistance = 72f * resources.displayMetrics.density
+        val minVelocity = 300f * resources.displayMetrics.density
+        val detector = GestureDetector(
+            this,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onFling(
+                    e1: MotionEvent?,
+                    e2: MotionEvent,
+                    velocityX: Float,
+                    velocityY: Float
+                ): Boolean {
+                    if (e1 == null) return false
+                    val distanceX = e2.x - e1.x
+                    val distanceY = e2.y - e1.y
+                    if (abs(distanceX) < minDistance ||
+                        abs(distanceX) <= abs(distanceY) ||
+                        abs(velocityX) < minVelocity
+                    ) {
+                        return false
+                    }
+                    return switchGroupMember(if (distanceX < 0) 1 else -1)
+                }
+            }
+        )
+        toolbar.setOnTouchListener { _, event -> detector.onTouchEvent(event) }
+    }
+
+    /** 切换同组相邻成员；到达首尾时不循环。 */
+    private fun switchGroupMember(offset: Int): Boolean {
+        if (groupId <= 0) return false
+        val members = dbHelper.queryMembers(groupId)
+        val currentIndex = members.indexOfFirst { it.code == code }
+        if (currentIndex < 0) return false
+        val target = members.getOrNull(currentIndex + offset) ?: return false
+
+        code = target.code
+        name = target.name
+        updateToolbarTitle()
+        reload(anchorTs = null, count = null)
+        return true
+    }
+
+    private fun updateToolbarTitle() {
+        toolbar.title = name
+        toolbar.subtitle = code
     }
 
     /** 右上角周期下拉；选中与当前一致时跳过（也挡掉首次布局的自动回调）。 */
@@ -140,26 +201,29 @@ class KLineActivity : AppCompatActivity() {
     private fun reload(anchorTs: Long?, count: Float?) {
         val seq = ++loadSeq
         val period = periodIndex
-        if (!synced) {
+        val memberCode = code
+        val memberName = name
+        if (memberCode !in syncedCodes) {
             // 首次进入：先展示同步提示，后台同步完成后再读库绘图
             emptyView.text = getString(R.string.kline_syncing)
             emptyView.visibility = View.VISIBLE
         }
         executor.execute {
+            if (seq != loadSeq) return@execute
             try {
-                ensureSynced()
+                ensureSynced(memberCode, memberName)
                 val bars = try {
-                    loadBars(period)
+                    loadBars(period, memberCode)
                 } catch (e: Exception) {
-                    AppLog.netError("读库失败，按无数据展示: code=$code period=$period", e)
+                    AppLog.netError("读库失败，按无数据展示: code=$memberCode period=$period", e)
                     emptyList()
                 }
                 // 缠论：本级别笔与中枢；次级别中枢（日线←30m、30m←5m、周线←日线，5m 无更低级别）
                 val chan = Chan.analyze(bars)
                 val subZs = try {
-                    loadSubBars(period)?.let { Chan.analyze(it).zhongshu }
+                    loadSubBars(period, memberCode)?.let { Chan.analyze(it).zhongshu }
                 } catch (e: Exception) {
-                    AppLog.netError("次级别读库失败，跳过次级别中枢: code=$code period=$period", e)
+                    AppLog.netError("次级别读库失败，跳过次级别中枢: code=$memberCode period=$period", e)
                     null
                 }
                 mainHandler.post {
@@ -172,7 +236,7 @@ class KLineActivity : AppCompatActivity() {
                 }
             } catch (e: Exception) {
                 // 兜底：后台任务不得异常中止，否则页面会永远停留在"同步中…"
-                AppLog.netError("K线加载流程异常: code=$code period=$period", e)
+                AppLog.netError("K线加载流程异常: code=$memberCode period=$period", e)
                 mainHandler.post {
                     if (seq == loadSeq && !isDestroyed) {
                         emptyView.text = getString(R.string.kline_empty)
@@ -188,33 +252,34 @@ class KLineActivity : AppCompatActivity() {
      * 捕获放宽到 [Exception]：数据源不可达（IOException）之外，服务端异常响应、
      * JSON/DB 运行期错误等同样不得阻断后续的本地读库绘图。
      */
-    private fun ensureSynced() {
-        if (synced) return
-        synced = true
+    private fun ensureSynced(memberCode: String, memberName: String) {
+        synchronized(syncedCodes) {
+            if (!syncedCodes.add(memberCode)) return
+        }
         // 兜底登记：确保服务端已跟踪该股（幂等；新股会触发服务端后台全量回填，
         // 首次打开可能尚无数据，稍后重开即有。种子库预置股也经此自动登记。）
         try {
-            DatasourceApi.registerStock(
+            DatasourceApi.registerMember(
                 applicationContext,
-                code,
-                name,
+                memberCode,
+                memberName,
                 groupId.takeIf { it > 0 },
                 groupName
             )
         } catch (e: Exception) {
-            AppLog.netError("服务端登记失败（不影响本次读库）: code=$code", e)
+            AppLog.netError("服务端登记失败（不影响本次读库）: code=$memberCode", e)
         }
         var historyOk = false
         try {
-            KLineSync.syncStock(
+            KLineSync.syncMember(
                 applicationContext,
                 dbHelper,
-                code,
+                memberCode,
                 fallbackOn5mTimeout = true
             )
             historyOk = true
         } catch (e: Exception) {
-            AppLog.netError("K线同步失败，回落本地数据: code=$code", e)
+            AppLog.netError("K线同步失败，回落本地数据: code=$memberCode", e)
             mainHandler.post {
                 if (!isDestroyed) {
                     Toast.makeText(this, R.string.kline_sync_failed, Toast.LENGTH_SHORT).show()
@@ -226,29 +291,29 @@ class KLineActivity : AppCompatActivity() {
         // 实时接口同属一个数据源，不再发无谓请求。
         if (historyOk) {
             try {
-                KLineSync.syncRealtime(applicationContext, dbHelper, code)
+                KLineSync.syncRealtime(applicationContext, dbHelper, memberCode)
             } catch (e: Exception) {
-                AppLog.netError("实时补齐异常（展示历史数据）: code=$code", e)
+                AppLog.netError("实时补齐异常（展示历史数据）: code=$memberCode", e)
             }
         }
     }
 
-    private fun loadBars(period: Int): List<KBar> =
+    private fun loadBars(period: Int, memberCode: String): List<KBar> =
         when (period) {
-            PERIOD_5M -> dbHelper.queryKBars(DbHelper.TABLE_K_5M, code, LIMIT_5M)
-            PERIOD_30M -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, code, LIMIT_30M)
-            PERIOD_60M -> dbHelper.queryKBars(DbHelper.TABLE_K_60M, code, LIMIT_60M)
-            PERIOD_DAY -> dbHelper.queryKBars(DbHelper.TABLE_K_DAY, code)
-            else -> KLineSynth.toWeekly(dbHelper.queryKBars(DbHelper.TABLE_K_DAY, code))
+            PERIOD_5M -> dbHelper.queryKBars(DbHelper.TABLE_K_5M, memberCode, LIMIT_5M)
+            PERIOD_30M -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, memberCode, LIMIT_30M)
+            PERIOD_60M -> dbHelper.queryKBars(DbHelper.TABLE_K_60M, memberCode, LIMIT_60M)
+            PERIOD_DAY -> dbHelper.queryKBars(DbHelper.TABLE_K_DAY, memberCode)
+            else -> KLineSynth.toWeekly(dbHelper.queryKBars(DbHelper.TABLE_K_DAY, memberCode))
         }
 
     /** 次级别 K 线（用于叠加次级别中枢）；5 分钟无更低级别返回 null。 */
-    private fun loadSubBars(period: Int): List<KBar>? =
+    private fun loadSubBars(period: Int, memberCode: String): List<KBar>? =
         when (period) {
-            PERIOD_30M -> dbHelper.queryKBars(DbHelper.TABLE_K_5M, code, LIMIT_5M)
-            PERIOD_60M -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, code, LIMIT_30M)
-            PERIOD_DAY -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, code, LIMIT_30M)
-            PERIOD_WEEK -> dbHelper.queryKBars(DbHelper.TABLE_K_DAY, code)
+            PERIOD_30M -> dbHelper.queryKBars(DbHelper.TABLE_K_5M, memberCode, LIMIT_5M)
+            PERIOD_60M -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, memberCode, LIMIT_30M)
+            PERIOD_DAY -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, memberCode, LIMIT_30M)
+            PERIOD_WEEK -> dbHelper.queryKBars(DbHelper.TABLE_K_DAY, memberCode)
             else -> null
         }
 
@@ -263,8 +328,10 @@ class KLineActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt(KEY_PERIOD, periodIndex)
+        outState.putString(KEY_CODE, code)
+        outState.putString(KEY_NAME, name)
         outState.putFloat(KEY_COUNT, chart.visibleCount)
-        outState.putBoolean(KEY_SYNCED, synced)
+        outState.putBoolean(KEY_SYNCED, code in syncedCodes)
         chart.rightEdgeTimestamp()?.let { outState.putLong(KEY_ANCHOR, it) }
     }
 
@@ -281,6 +348,8 @@ class KLineActivity : AppCompatActivity() {
         const val EXTRA_GROUP_NAME = "extra_group_name"
 
         private const val KEY_PERIOD = "key_period"
+        private const val KEY_CODE = "key_code"
+        private const val KEY_NAME = "key_name"
         private const val KEY_COUNT = "key_count"
         private const val KEY_ANCHOR = "key_anchor"
         private const val KEY_SYNCED = "key_synced"

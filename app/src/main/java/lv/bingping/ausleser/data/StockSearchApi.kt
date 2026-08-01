@@ -11,11 +11,11 @@ import java.net.URLEncoder
 /**
  * 东方财富搜索联想接口（searchapi.eastmoney.com），支持 代码 / 名称 / 拼音首字母。
  *
- * [search] 为阻塞式调用，必须在后台线程执行；结果映射为 [Stock] 列表。
+ * [search] 为阻塞式调用，必须在后台线程执行；结果映射为 [Member] 列表。
  * 仅保留 A 股（沪深主板/创业板/科创板/北A）与基金/ETF 类别，过滤指数等品种。
  * 请求、响应与失败均经 [AppLog] 输出网络日志（TAG: AusleserNet）。
  */
-object StockSearchApi {
+object MemberSearchApi {
 
     private const val SUGGEST_URL = "https://searchapi.eastmoney.com/api/suggest/get"
 
@@ -36,12 +36,12 @@ object StockSearchApi {
     private val KEEP_CLASSIFY = setOf("AStock", "23", "NEEQ", "Fund")
 
     /**
-     * 按关键字搜索候选股票。
+     * 按关键字搜索候选成员。
      *
      * @param query 代码 / 名称 / 拼音首字母
      * @return 候选列表（无匹配时为空）；网络或解析失败抛 [IOException]
      */
-    fun search(query: String, count: Int = 10): List<Stock> {
+    fun search(query: String, count: Int = 10): List<Member> {
         val start = SystemClock.elapsedRealtime()
         val url = SUGGEST_URL +
             "?input=" + URLEncoder.encode(query, "UTF-8") +
@@ -73,17 +73,17 @@ object StockSearchApi {
     }
 
     /** 解析联想接口 JSON；无匹配时 Data 为 null，返回空列表。 */
-    private fun parse(body: String): List<Stock> {
+    private fun parse(body: String): List<Member> {
         val table = JSONObject(body).optJSONObject("QuotationCodeTable") ?: return emptyList()
         val data = table.optJSONArray("Data") ?: return emptyList()
-        val out = ArrayList<Stock>(data.length())
+        val out = ArrayList<Member>(data.length())
         for (i in 0 until data.length()) {
             val item = data.optJSONObject(i) ?: continue
             if (item.optString("Classify") !in KEEP_CLASSIFY) continue
             val code = item.optString("Code")
             val name = item.optString("Name")
             if (code.isEmpty() || name.isEmpty()) continue
-            out.add(Stock(code = code, name = name, pinyinInitials = item.optString("PinYin")))
+            out.add(Member(code = code, name = name, pinyinInitials = item.optString("PinYin")))
         }
         return out
     }

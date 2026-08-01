@@ -11,7 +11,7 @@
 ## 种子库内容约定（v4 起）
 
 - **只携带自选数据**：`t_selber_select_group`（默认分组含 `我的自选` 与 `ETF`）
-  与 `t_selber_select_stock`（初始自选行）；
+  与 `t_selber_select_member`（初始自选成员）；
 - **K 线表必须为空**：`t_k_5m` / `t_k_30m` / `t_k_60m` / `t_k_day` 只建表不装数据——
   K 线一律由 app 运行时从网络同步（`data/KLineSync.kt`，前复权，
   首次下载 5m/30m 两年、60m/日线五年，之后增量补尾、除权除息自动重建）；
@@ -23,8 +23,8 @@
 ## 种子库要求
 
 - schema 与 `DbHelper` 当前定义完全一致（t_selber_select_group /
-  t_selber_select_stock / t_k_5m / t_k_30m / t_k_60m / t_k_day 及索引）；
-- 必须设置 `PRAGMA user_version = 6`（= `DbHelper.DB_VERSION`），
+  t_selber_select_member / t_k_5m / t_k_30m / t_k_60m / t_k_day 及索引）；
+- 必须设置 `PRAGMA user_version = 7`（= `DbHelper.DB_VERSION`），
   否则 SQLiteOpenHelper 打开时会重跑 onCreate 直接崩溃
   （旧 v3/v4/v5 种子仍可安装：打开时 onUpgrade 会自动补建缺失的 K 线表、
   补加 is_realtime 列，v3 种子另会清空 bfq 遗留 K 线）；

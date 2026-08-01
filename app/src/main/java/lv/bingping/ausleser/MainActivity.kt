@@ -18,10 +18,10 @@ import com.google.android.material.chip.ChipGroup
 import lv.bingping.ausleser.data.DatasourceApi
 import lv.bingping.ausleser.data.DbHelper
 import lv.bingping.ausleser.data.KLineSync
-import lv.bingping.ausleser.data.SelectStock
-import lv.bingping.ausleser.ui.AddStockBottomSheet
+import lv.bingping.ausleser.data.SelectMember
+import lv.bingping.ausleser.ui.AddMemberBottomSheet
 import lv.bingping.ausleser.ui.GroupManageBottomSheet
-import lv.bingping.ausleser.ui.StockListAdapter
+import lv.bingping.ausleser.ui.MemberListAdapter
 import lv.bingping.ausleser.ui.SwipeRevealCallback
 import lv.bingping.ausleser.util.AppLog
 import java.util.concurrent.Executors
@@ -35,8 +35,8 @@ import java.util.concurrent.Executors
  *  - 第二层：顶部工具栏子栏（[R.id.sub_bar]），点击“自选”后显示全部自选分组，
  *    分组来自数据库表 t_selber_select_group，横向排列并可横向滑动，
  *    右侧“群组管理”用于增删改分组；
- *  - 第三层：股票工具栏（[R.id.stocks_toolbar]）+ 当前分组的自选列表，
- *    列表数据来自 t_selber_select_stock，右侧“+”可按代码/名称/拼音首字母搜索添加。
+ *  - 第三层：成员工具栏（[R.id.members_toolbar]）+ 当前分组的自选列表，
+ *    列表数据来自 t_selber_select_member，右侧“+”可按代码/名称/拼音首字母搜索添加。
  */
 class MainActivity : AppCompatActivity() {
 
@@ -52,11 +52,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var subBar: View
     private lateinit var groupChipGroup: ChipGroup
 
-    private lateinit var tvStocksTitle: TextView
-    private lateinit var btnAddStock: ImageButton
-    private lateinit var rvStocks: RecyclerView
-    private lateinit var tvStocksEmpty: TextView
-    private lateinit var stockAdapter: StockListAdapter
+    private lateinit var tvMembersTitle: TextView
+    private lateinit var btnAddMember: ImageButton
+    private lateinit var rvMembers: RecyclerView
+    private lateinit var tvMembersEmpty: TextView
+    private lateinit var memberAdapter: MemberListAdapter
     private lateinit var swipeCallback: SwipeRevealCallback
     private var syncAnimator: ObjectAnimator? = null
 
@@ -78,26 +78,26 @@ class MainActivity : AppCompatActivity() {
         subBar = findViewById(R.id.sub_bar)
         groupChipGroup = findViewById(R.id.group_chip_group)
 
-        tvStocksTitle = findViewById(R.id.tv_stocks_title)
-        btnAddStock = findViewById(R.id.btn_add_stock)
-        rvStocks = findViewById(R.id.rv_stocks)
-        tvStocksEmpty = findViewById(R.id.tv_stocks_empty)
+        tvMembersTitle = findViewById(R.id.tv_members_title)
+        btnAddMember = findViewById(R.id.btn_add_member)
+        rvMembers = findViewById(R.id.rv_members)
+        tvMembersEmpty = findViewById(R.id.tv_members_empty)
 
-        stockAdapter = StockListAdapter(
-            onDelete = { stock -> removeStock(stock) },
-            onClick = { stock -> openKLine(stock) }
+        memberAdapter = MemberListAdapter(
+            onDelete = { member -> removeMember(member) },
+            onClick = { member -> openKLine(member) }
         )
-        rvStocks.layoutManager = LinearLayoutManager(this)
-        rvStocks.adapter = stockAdapter
+        rvMembers.layoutManager = LinearLayoutManager(this)
+        rvMembers.adapter = memberAdapter
 
         swipeCallback = SwipeRevealCallback()
-        ItemTouchHelper(swipeCallback).attachToRecyclerView(rvStocks)
-        rvStocks.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+        ItemTouchHelper(swipeCallback).attachToRecyclerView(rvMembers)
+        rvMembers.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
                 swipeCallback.closeOpen()
             }
         })
-        rvStocks.addOnItemTouchListener(object : RecyclerView.OnItemTouchListener {
+        rvMembers.addOnItemTouchListener(object : RecyclerView.OnItemTouchListener {
             override fun onInterceptTouchEvent(rv: RecyclerView, e: android.view.MotionEvent): Boolean {
                 if (e.action == android.view.MotionEvent.ACTION_DOWN && swipeCallback.openVH != null) {
                     val vh = rv.findChildViewUnder(e.x, e.y)?.let { rv.findContainingViewHolder(it) }
@@ -122,9 +122,9 @@ class MainActivity : AppCompatActivity() {
         }
         btnSyncGroup.setOnClickListener { syncCurrentGroup() }
         btnDownloadGroup.setOnClickListener { downloadCurrentGroup() }
-        btnAddStock.setOnClickListener {
+        btnAddMember.setOnClickListener {
             if (selectedGroupId > 0) {
-                AddStockBottomSheet(this, dbHelper, selectedGroupId) { reloadStocks() }.show()
+            AddMemberBottomSheet(this, dbHelper, selectedGroupId) { reloadMembers() }.show()
             }
         }
         findViewById<ImageButton>(R.id.btn_settings).setOnClickListener {
@@ -136,8 +136,8 @@ class MainActivity : AppCompatActivity() {
                 val chip = group.findViewById<Chip>(checkedIds.first())
                 chip?.let {
                     selectedGroupId = it.tag as? Long ?: -1L
-                    tvStocksTitle.text = it.text
-                    reloadStocks()
+                    tvMembersTitle.text = it.text
+                    reloadMembers()
                 }
             }
         }
@@ -177,24 +177,24 @@ class MainActivity : AppCompatActivity() {
         }
         if (groupChipGroup.childCount == 0) {
             selectedGroupId = -1L
-            tvStocksTitle.text = ""
-            reloadStocks()
+            tvMembersTitle.text = ""
+            reloadMembers()
         }
     }
 
-    /** 加载当前选中分组的股票列表并切换空态。 */
-    private fun reloadStocks() {
+    /** 加载当前选中分组的成员列表并切换空态。 */
+    private fun reloadMembers() {
         if (::swipeCallback.isInitialized) swipeCallback.closeOpen()
-        val stocks = if (selectedGroupId > 0) dbHelper.queryStocks(selectedGroupId) else emptyList()
-        stockAdapter.submit(stocks)
-        tvStocksEmpty.visibility = if (stocks.isEmpty()) View.VISIBLE else View.GONE
+        val members = if (selectedGroupId > 0) dbHelper.queryMembers(selectedGroupId) else emptyList()
+        memberAdapter.submit(members)
+        tvMembersEmpty.visibility = if (members.isEmpty()) View.VISIBLE else View.GONE
     }
 
     /** 对账当前群组成员，并由服务端逐成员串行同步 K 线。 */
     private fun syncCurrentGroup() {
         if (selectedGroupId <= 0 || syncAnimator != null) return
-        val stocks = dbHelper.queryStocks(selectedGroupId)
-        val groupName = tvStocksTitle.text.toString()
+        val members = dbHelper.queryMembers(selectedGroupId)
+        val groupName = tvMembersTitle.text.toString()
         val animationStartedAt = SystemClock.elapsedRealtime()
         btnSyncGroup.isEnabled = false
         btnDownloadGroup.isEnabled = false
@@ -205,7 +205,7 @@ class MainActivity : AppCompatActivity() {
         }
         executor.execute {
             val ok = try {
-                DatasourceApi.syncGroup(this, selectedGroupId, groupName, stocks)
+                DatasourceApi.syncGroup(this, selectedGroupId, groupName, members)
             } catch (e: Exception) {
                 AppLog.netError("群组同步请求失败: groupId=$selectedGroupId", e)
                 false
@@ -236,8 +236,8 @@ class MainActivity : AppCompatActivity() {
     /** 从数据源逐一下载当前群组全部成员的 K 线并写入 APP 数据库。 */
     private fun downloadCurrentGroup() {
         if (selectedGroupId <= 0 || syncAnimator != null) return
-        val stocks = dbHelper.queryStocks(selectedGroupId)
-        if (stocks.isEmpty()) {
+        val members = dbHelper.queryMembers(selectedGroupId)
+        if (members.isEmpty()) {
             Toast.makeText(this, R.string.download_group_empty, Toast.LENGTH_SHORT).show()
             return
         }
@@ -251,15 +251,15 @@ class MainActivity : AppCompatActivity() {
         }
         executor.execute {
             var succeeded = 0
-            stocks.forEach { stock ->
+            members.forEach { member ->
                 try {
-                    KLineSync.syncStock(this, dbHelper, stock.code)
+                    KLineSync.syncMember(this, dbHelper, member.code)
                     succeeded++
                 } catch (e: Exception) {
-                    AppLog.netError("群组成员下载失败: code=${stock.code}", e)
+                    AppLog.netError("群组成员下载失败: code=${member.code}", e)
                 }
             }
-            val failed = stocks.size - succeeded
+            val failed = members.size - succeeded
             runOnUiThread {
                 syncAnimator?.cancel()
                 syncAnimator = null
@@ -279,20 +279,20 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 从当前分组移除一只股票，并通知服务端只删除对应群组关系。 */
-    private fun removeStock(stock: SelectStock) {
-        dbHelper.deleteStock(stock.id)
+    /** 从当前分组移除一只成员，并通知服务端只删除对应群组关系。 */
+    private fun removeMember(member: SelectMember) {
+        dbHelper.deleteMember(member.id)
         executor.execute {
             try {
-                DatasourceApi.unregisterStock(this, stock.code, stock.groupId)
+                DatasourceApi.unregisterMember(this, member.code, member.groupId)
             } catch (e: Exception) {
                 AppLog.netError(
-                    "服务端移除群组成员失败: groupId=${stock.groupId} code=${stock.code}",
+                    "服务端移除群组成员失败: groupId=${member.groupId} code=${member.code}",
                     e
                 )
             }
         }
-        reloadStocks()
+        reloadMembers()
     }
 
     private fun unregisterGroup(groupId: Long) {
@@ -305,15 +305,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 打开指定股票的 K 线图页面。 */
-    private fun openKLine(stock: SelectStock) {
+    /** 打开指定成员的 K 线图页面。 */
+    private fun openKLine(member: SelectMember) {
         startActivity(
             KLineActivity.intent(
                 this,
-                stock.code,
-                stock.name,
-                stock.groupId,
-                tvStocksTitle.text.toString()
+                member.code,
+                member.name,
+                member.groupId,
+                tvMembersTitle.text.toString()
             )
         )
     }
