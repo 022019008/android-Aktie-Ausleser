@@ -22,6 +22,13 @@ import java.net.URL
  */
 object DatasourceApi {
 
+    data class GroupSyncStatus(
+        val status: String,
+        val total: Int,
+        val completed: Int,
+        val failed: Int
+    )
+
     private const val CONNECT_TIMEOUT_MS = 8_000
     private const val READ_TIMEOUT_MS = 10_000
 
@@ -104,7 +111,7 @@ object DatasourceApi {
         groupId: Long,
         groupName: String,
         membersInGroup: List<SelectMember>
-    ): Boolean {
+    ): String {
         val url = "${Settings.getBaseUrl(ctx)}/api/members/sync-group"
         val members = JSONArray()
         membersInGroup.forEach { member ->
@@ -114,10 +121,47 @@ object DatasourceApi {
             .put("group_id", groupId)
             .put("group_name", groupName)
             .put("members", members)
-        val status = sendStatus("POST", url, body)
-        val ok = status in 200..299
-        if (!ok) AppLog.net("syncGroup 异常状态: HTTP $status")
-        return ok
+        val (status, responseBody) = sendForBody("POST", url, body)
+        if (status !in 200..299) {
+            AppLog.net("syncGroup 异常状态: HTTP $status")
+            throw IOException("HTTP $status")
+        }
+        return try {
+            JSONObject(responseBody).getString("task_id")
+        } catch (e: Exception) {
+            throw IOException("群组同步响应缺少 task_id", e)
+        }
+    }
+
+    /** 监听群组同步 SSE，收到 completed / failed / cancelled 后返回。 */
+    fun awaitGroupSync(ctx: Context, taskId: String): GroupSyncStatus {
+        val url = "${Settings.getBaseUrl(ctx)}/api/members/sync-tasks/$taskId/events"
+        val conn = openConnection(url, "GET").apply {
+            readTimeout = 0
+            setRequestProperty("Accept", "text/event-stream")
+        }
+        try {
+            val status = conn.responseCode
+            if (status != HttpURLConnection.HTTP_OK) throw IOException("HTTP $status")
+            conn.inputStream.bufferedReader().useLines { lines ->
+                lines.forEach { line ->
+                    if (!line.startsWith("data:")) return@forEach
+                    val payload = JSONObject(line.removePrefix("data:").trim())
+                    val taskStatus = payload.optString("status")
+                    if (taskStatus in setOf("completed", "failed", "cancelled")) {
+                        return GroupSyncStatus(
+                            status = taskStatus,
+                            total = payload.optInt("total"),
+                            completed = payload.optInt("completed"),
+                            failed = payload.optInt("failed")
+                        )
+                    }
+                }
+            }
+            throw IOException("同步事件流在终态前关闭")
+        } finally {
+            conn.disconnect()
+        }
     }
 
     /** 删除一个群组及其成员关系；仍属于其他群组的成员继续跟踪。 */
@@ -192,6 +236,21 @@ object DatasourceApi {
                 conn.outputStream.bufferedWriter().use { it.write(body.toString()) }
             }
             return conn.responseCode
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** 发送请求并同时读取响应体；非 2xx 响应体仍由调用方按状态处理。 */
+    private fun sendForBody(method: String, url: String, body: JSONObject): Pair<Int, String> {
+        val conn = openConnection(url, method)
+        try {
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.doOutput = true
+            conn.outputStream.bufferedWriter().use { it.write(body.toString()) }
+            val status = conn.responseCode
+            val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+            return status to (stream?.bufferedReader()?.use { it.readText() } ?: "")
         } finally {
             conn.disconnect()
         }

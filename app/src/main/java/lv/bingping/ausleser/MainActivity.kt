@@ -3,7 +3,6 @@ package lv.bingping.ausleser
 import android.animation.ObjectAnimator
 import android.animation.ValueAnimator
 import android.os.Bundle
-import android.os.SystemClock
 import android.view.View
 import android.widget.Button
 import android.widget.ImageButton
@@ -195,7 +194,7 @@ class MainActivity : AppCompatActivity() {
         if (selectedGroupId <= 0 || syncAnimator != null) return
         val members = dbHelper.queryMembers(selectedGroupId)
         val groupName = tvMembersTitle.text.toString()
-        val animationStartedAt = SystemClock.elapsedRealtime()
+        val groupId = selectedGroupId
         btnSyncGroup.isEnabled = false
         btnDownloadGroup.isEnabled = false
         syncAnimator = ObjectAnimator.ofFloat(btnSyncGroup, View.ROTATION, 0f, 360f).apply {
@@ -204,23 +203,26 @@ class MainActivity : AppCompatActivity() {
             start()
         }
         executor.execute {
-            val ok = try {
-                DatasourceApi.syncGroup(this, selectedGroupId, groupName, members)
+            val result = try {
+                val taskId = DatasourceApi.syncGroup(this, groupId, groupName, members)
+                DatasourceApi.awaitGroupSync(this, taskId)
             } catch (e: Exception) {
-                AppLog.netError("群组同步请求失败: groupId=$selectedGroupId", e)
-                false
+                AppLog.netError("群组同步失败: groupId=$groupId", e)
+                null
             }
             runOnUiThread {
-                val remaining = (800L - (SystemClock.elapsedRealtime() - animationStartedAt))
-                    .coerceAtLeast(0L)
-                btnSyncGroup.postDelayed({
-                    stopSyncAnimation()
-                    Toast.makeText(
-                        this,
-                        if (ok) R.string.sync_group_queued else R.string.sync_group_failed,
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }, remaining)
+                stopSyncAnimation()
+                val message = when {
+                    result == null -> getString(R.string.sync_group_failed)
+                    result.status == "cancelled" -> getString(R.string.sync_group_cancelled)
+                    result.failed > 0 -> getString(
+                        R.string.sync_group_partial,
+                        result.completed,
+                        result.failed
+                    )
+                    else -> getString(R.string.sync_group_done, result.completed)
+                }
+                Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -244,8 +246,15 @@ class MainActivity : AppCompatActivity() {
 
         btnSyncGroup.isEnabled = false
         btnDownloadGroup.isEnabled = false
-        syncAnimator = ObjectAnimator.ofFloat(btnDownloadGroup, View.ROTATION, 0f, 360f).apply {
-            duration = 800L
+        val dropDistance = 8f * resources.displayMetrics.density
+        syncAnimator = ObjectAnimator.ofFloat(
+            btnDownloadGroup,
+            View.TRANSLATION_Y,
+            0f,
+            dropDistance,
+            0f
+        ).apply {
+            duration = 700L
             repeatCount = ValueAnimator.INFINITE
             start()
         }
@@ -263,7 +272,7 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 syncAnimator?.cancel()
                 syncAnimator = null
-                btnDownloadGroup.rotation = 0f
+                btnDownloadGroup.translationY = 0f
                 btnSyncGroup.isEnabled = true
                 btnDownloadGroup.isEnabled = true
                 Toast.makeText(
