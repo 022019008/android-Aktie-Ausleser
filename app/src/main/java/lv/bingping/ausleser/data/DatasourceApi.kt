@@ -3,6 +3,7 @@ package lv.bingping.ausleser.data
 import android.content.Context
 import android.os.SystemClock
 import lv.bingping.ausleser.util.AppLog
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -20,6 +21,13 @@ import java.net.URL
  * bars 行序：[timestamp, open, high, low, close, volume, amount]，与 [KBar] 一致。
  */
 object DatasourceApi {
+
+    data class GroupSyncStatus(
+        val status: String,
+        val total: Int,
+        val completed: Int,
+        val failed: Int
+    )
 
     private const val CONNECT_TIMEOUT_MS = 8_000
     private const val READ_TIMEOUT_MS = 10_000
@@ -52,27 +60,116 @@ object DatasourceApi {
     }
 
     /**
-     * POST /api/stocks 加入跟踪；新股由服务器后台全量回填，
+     * GET /api/kline/{code}/realtime?freq= 取当日实时 bar（升序，服务端不落库）。
+     *
+     * 非交易日/无当日数据返回空列表；实时源不可用（HTTP 502 等）抛 [IOException]，
+     * 调用方回落到纯历史展示。仅当历史数据补不到当日时使用（见 [KLineSync.syncRealtime]）。
+     */
+    fun fetchKlineRealtime(ctx: Context, code: String, freq: String): List<KBar> {
+        val url = "${Settings.getBaseUrl(ctx)}/api/kline/$code/realtime?freq=$freq"
+        return fetchBars(url, "realtime code=$code freq=$freq")
+    }
+
+    /**
+    * POST /api/members 加入跟踪；新股由服务器后台全量回填，
      * 已激活旧股秒回（幂等，可重复调用）。
      */
-    fun registerStock(ctx: Context, code: String, name: String): Boolean {
-        val url = "${Settings.getBaseUrl(ctx)}/api/stocks"
+    fun registerMember(
+        ctx: Context,
+        code: String,
+        name: String,
+        groupId: Long? = null,
+        groupName: String = ""
+    ): Boolean {
+        val url = "${Settings.getBaseUrl(ctx)}/api/members"
         val body = JSONObject().put("code", code).put("name", name)
+        if (groupId != null) {
+            body.put("group_id", groupId).put("group_name", groupName)
+        }
         val status = sendStatus("POST", url, body)
         val ok = status in 200..299
-        if (!ok) AppLog.net("registerStock 异常状态: code=$code, HTTP $status")
+        if (!ok) AppLog.net("registerMember 异常状态: code=$code, HTTP $status")
         return ok
     }
 
     /**
-     * DELETE /api/stocks/{code} 停用跟踪（服务端保留历史数据）。
+    * DELETE /api/members/{code} 停用跟踪（服务端保留历史数据）。
      * 该股从未跟踪（404）也视为成功。
      */
-    fun unregisterStock(ctx: Context, code: String): Boolean {
-        val url = "${Settings.getBaseUrl(ctx)}/api/stocks/$code"
+    fun unregisterMember(ctx: Context, code: String, groupId: Long? = null): Boolean {
+        val query = if (groupId == null) "" else "?group_id=$groupId"
+        val url = "${Settings.getBaseUrl(ctx)}/api/members/$code$query"
         val status = sendStatus("DELETE", url)
         val ok = status in 200..299 || status == HttpURLConnection.HTTP_NOT_FOUND
-        if (!ok) AppLog.net("unregisterStock 异常状态: code=$code, HTTP $status")
+        if (!ok) AppLog.net("unregisterMember 异常状态: code=$code, HTTP $status")
+        return ok
+    }
+
+    /** 以当前群组对账服务端跟踪列表，并触发服务端逐成员串行同步。 */
+    fun syncGroup(
+        ctx: Context,
+        groupId: Long,
+        groupName: String,
+        membersInGroup: List<SelectMember>
+    ): String {
+        val url = "${Settings.getBaseUrl(ctx)}/api/members/sync-group"
+        val members = JSONArray()
+        membersInGroup.forEach { member ->
+            members.put(JSONObject().put("code", member.code).put("name", member.name))
+        }
+        val body = JSONObject()
+            .put("group_id", groupId)
+            .put("group_name", groupName)
+            .put("members", members)
+        val (status, responseBody) = sendForBody("POST", url, body)
+        if (status !in 200..299) {
+            AppLog.net("syncGroup 异常状态: HTTP $status")
+            throw IOException("HTTP $status")
+        }
+        return try {
+            JSONObject(responseBody).getString("task_id")
+        } catch (e: Exception) {
+            throw IOException("群组同步响应缺少 task_id", e)
+        }
+    }
+
+    /** 监听群组同步 SSE，收到 completed / failed / cancelled 后返回。 */
+    fun awaitGroupSync(ctx: Context, taskId: String): GroupSyncStatus {
+        val url = "${Settings.getBaseUrl(ctx)}/api/members/sync-tasks/$taskId/events"
+        val conn = openConnection(url, "GET").apply {
+            readTimeout = 0
+            setRequestProperty("Accept", "text/event-stream")
+        }
+        try {
+            val status = conn.responseCode
+            if (status != HttpURLConnection.HTTP_OK) throw IOException("HTTP $status")
+            conn.inputStream.bufferedReader().useLines { lines ->
+                lines.forEach { line ->
+                    if (!line.startsWith("data:")) return@forEach
+                    val payload = JSONObject(line.removePrefix("data:").trim())
+                    val taskStatus = payload.optString("status")
+                    if (taskStatus in setOf("completed", "failed", "cancelled")) {
+                        return GroupSyncStatus(
+                            status = taskStatus,
+                            total = payload.optInt("total"),
+                            completed = payload.optInt("completed"),
+                            failed = payload.optInt("failed")
+                        )
+                    }
+                }
+            }
+            throw IOException("同步事件流在终态前关闭")
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** 删除一个群组及其成员关系；仍属于其他群组的成员继续跟踪。 */
+    fun unregisterGroup(ctx: Context, groupId: Long): Boolean {
+        val url = "${Settings.getBaseUrl(ctx)}/api/members/groups/$groupId"
+        val status = sendStatus("DELETE", url)
+        val ok = status in 200..299 || status == HttpURLConnection.HTTP_NOT_FOUND
+        if (!ok) AppLog.net("unregisterGroup 异常状态: groupId=$groupId, HTTP $status")
         return ok
     }
 
@@ -139,6 +236,21 @@ object DatasourceApi {
                 conn.outputStream.bufferedWriter().use { it.write(body.toString()) }
             }
             return conn.responseCode
+        } finally {
+            conn.disconnect()
+        }
+    }
+
+    /** 发送请求并同时读取响应体；非 2xx 响应体仍由调用方按状态处理。 */
+    private fun sendForBody(method: String, url: String, body: JSONObject): Pair<Int, String> {
+        val conn = openConnection(url, method)
+        try {
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            conn.doOutput = true
+            conn.outputStream.bufferedWriter().use { it.write(body.toString()) }
+            val status = conn.responseCode
+            val stream = if (status in 200..299) conn.inputStream else conn.errorStream
+            return status to (stream?.bufferedReader()?.use { it.readText() } ?: "")
         } finally {
             conn.disconnect()
         }

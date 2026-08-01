@@ -77,9 +77,10 @@
                 style="?attr/materialButtonOutlinedStyle"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
-                android:layout_marginEnd="8dp"
+                android:layout_marginEnd="4dp"
                 android:minWidth="0dp"
                 android:text="@string/group_manage" />
+
         </LinearLayout>
     </com.google.android.material.appbar.AppBarLayout>
 
@@ -92,7 +93,7 @@
 
         <!-- 第三层工具栏：左侧当前分组名，右侧“+”添加自选 -->
         <LinearLayout
-            android:id="@+id/stocks_toolbar"
+            android:id="@+id/members_toolbar"
             android:layout_width="match_parent"
             android:layout_height="48dp"
             android:background="?attr/colorSurface"
@@ -102,7 +103,7 @@
             android:paddingHorizontal="12dp">
 
             <TextView
-                android:id="@+id/tv_stocks_title"
+                android:id="@+id/tv_members_title"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
@@ -112,16 +113,38 @@
                 android:textColor="?attr/colorOnSurface" />
 
             <ImageButton
-                android:id="@+id/btn_add_stock"
+                android:id="@+id/btn_add_member"
                 android:layout_width="40dp"
                 android:layout_height="40dp"
                 android:background="?attr/selectableItemBackgroundBorderless"
                 android:focusable="false"
                 android:focusableInTouchMode="false"
-                android:contentDescription="@string/add_stock_action"
+                android:contentDescription="@string/add_member_action"
                 android:padding="8dp"
                 android:scaleType="centerInside"
                 android:src="@drawable/ic_add"
+                app:tint="?attr/colorPrimary" />
+
+            <ImageButton
+                android:id="@+id/btn_sync_group"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/sync_group_action"
+                android:padding="8dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_sync"
+                app:tint="?attr/colorPrimary" />
+
+            <ImageButton
+                android:id="@+id/btn_download_group"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/download_group_action"
+                android:padding="8dp"
+                android:scaleType="centerInside"
+                android:src="@drawable/ic_download"
                 app:tint="?attr/colorPrimary" />
         </LinearLayout>
 
@@ -131,17 +154,17 @@
             android:layout_weight="1">
 
             <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rv_stocks"
+                android:id="@+id/rv_members"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:clipToPadding="false" />
 
             <TextView
-                android:id="@+id/tv_stocks_empty"
+                android:id="@+id/tv_members_empty"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_gravity="center"
-                android:text="@string/empty_stocks"
+                android:text="@string/empty_members"
                 android:textSize="14sp"
                 android:textColor="?attr/colorOnSurface"
                 android:visibility="gone" />

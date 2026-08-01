@@ -7,6 +7,8 @@ import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.widget.AdapterView
@@ -16,6 +18,7 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.appbar.MaterialToolbar
+import lv.bingping.ausleser.data.Chan
 import lv.bingping.ausleser.data.DatasourceApi
 import lv.bingping.ausleser.data.DbHelper
 import lv.bingping.ausleser.data.KBar
@@ -23,20 +26,27 @@ import lv.bingping.ausleser.data.KLineSync
 import lv.bingping.ausleser.data.KLineSynth
 import lv.bingping.ausleser.ui.KLineChartView
 import lv.bingping.ausleser.util.AppLog
-import java.io.IOException
 import java.util.concurrent.Executors
+import kotlin.math.abs
 
 /**
- * K 线图页面：展示某只股票的 K 线，右上角下拉切换周期
- * （5分钟 / 30分钟 / 日线 / 周线），默认日线。
+ * K 线图页面：展示某只成员的 K 线，右上角下拉切换周期
+ * （5分钟 / 30分钟 / 60分钟 / 日线 / 周线），默认日线。
  *
- * 进入页面先经 [KLineSync.syncStock] 在后台同步该股 K 线（前复权入库，
- * 首次下载 5m/30m 两年、日线五年，其后增量补尾、除权除息时自动重建），
+ * 进入页面先经 [KLineSync.syncMember] 在后台同步该股历史 K 线（前复权入库，
+ * 首次下载 5m/30m 两年、60m/日线五年，其后增量补尾、除权除息时自动重建），
+ * 历史同步成功入库后再经 [KLineSync.syncRealtime] 按需补齐当日实时 bar
+ * （库存定稿前历史接口不含当日数据；历史全部失败则跳过实时请求）；
  * 同步失败仅提示，仍展示本地已有数据；同一页面生命周期内只同步一次。
  *
  * 数据源（同步后全部读库）：
- *  - 5分钟：库表 t_k_5m；30分钟：库表 t_k_30m（均由自建数据源 Aktie_datasource 网络拉取）；
+ *  - 5分钟：库表 t_k_5m；30分钟：t_k_30m；60分钟：t_k_60m
+ *   （均由自建数据源 Aktie_datasource 网络拉取）；
  *  - 日线：库表 t_k_day；周线：由日线内存聚合（[KLineSynth.toWeekly]）。
+ *
+ * 图上叠加缠论笔与中枢（[Chan] 纯算法计算）：本级别笔 + 本级别中枢 +
+ * 次级别中枢（日线图叠 30 分钟中枢、60 分钟图叠 30 分钟中枢、
+ * 30 分钟图叠 5 分钟中枢、周线图叠日线中枢）。
  *
  * 默认可见条数按屏幕方向：竖屏 [KLineChartView.DEFAULT_PORTRAIT_COUNT] 根，
  * 横屏 [KLineChartView.DEFAULT_LANDSCAPE_COUNT] 根；旋转后恢复周期与视窗位置。
@@ -44,6 +54,7 @@ import java.util.concurrent.Executors
 class KLineActivity : AppCompatActivity() {
 
     private lateinit var dbHelper: DbHelper
+    private lateinit var toolbar: MaterialToolbar
     private lateinit var chart: KLineChartView
     private lateinit var emptyView: TextView
 
@@ -51,16 +62,19 @@ class KLineActivity : AppCompatActivity() {
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /** 加载序号，切换周期时丢弃过期结果。 */
+    @Volatile
     private var loadSeq = 0
 
     private var code = ""
     private var name = ""
+    private var groupId = -1L
+    private var groupName = ""
 
     /** 当前周期下标（对应 R.array.kline_periods），默认日线。 */
     private var periodIndex = PERIOD_DAY
 
-    /** 本页生命周期内是否已同步过（旋转后经 savedInstanceState 保留，避免重复拉取）。 */
-    private var synced = false
+    /** 本页生命周期内已同步过的成员代码，切回时避免重复拉取。 */
+    private val syncedCodes = mutableSetOf<String>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -68,10 +82,16 @@ class KLineActivity : AppCompatActivity() {
 
         code = intent.getStringExtra(EXTRA_CODE).orEmpty()
         name = intent.getStringExtra(EXTRA_NAME).orEmpty()
+        groupId = intent.getLongExtra(EXTRA_GROUP_ID, -1L)
+        groupName = intent.getStringExtra(EXTRA_GROUP_NAME).orEmpty()
 
-        val toolbar = findViewById<MaterialToolbar>(R.id.kline_toolbar)
-        toolbar.title = name
-        toolbar.subtitle = code
+        savedInstanceState?.let { state ->
+            code = state.getString(KEY_CODE, code)
+            name = state.getString(KEY_NAME, name)
+        }
+
+        toolbar = findViewById(R.id.kline_toolbar)
+        updateToolbarTitle()
         toolbar.setNavigationOnClickListener { finish() }
 
         chart = findViewById(R.id.kline_chart)
@@ -86,11 +106,63 @@ class KLineActivity : AppCompatActivity() {
             periodIndex = s.getInt(KEY_PERIOD, PERIOD_DAY)
             restoredCount = s.getFloat(KEY_COUNT, 0f).takeIf { it > 0f }
             restoredAnchor = s.getLong(KEY_ANCHOR, -1L).takeIf { it > 0L }
-            synced = s.getBoolean(KEY_SYNCED, false)
+            if (s.getBoolean(KEY_SYNCED, false)) syncedCodes.add(code)
         }
 
         setupPeriodSpinner(toolbar)
+        setupMemberSwipe(toolbar)
         reload(anchorTs = restoredAnchor, count = restoredCount)
+    }
+
+    /** 在顶栏左右滑动，按当前群组列表顺序切换上一只/下一只成员。 */
+    private fun setupMemberSwipe(toolbar: MaterialToolbar) {
+        val minDistance = 72f * resources.displayMetrics.density
+        val minVelocity = 300f * resources.displayMetrics.density
+        val detector = GestureDetector(
+            this,
+            object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: MotionEvent): Boolean = true
+
+                override fun onFling(
+                    e1: MotionEvent?,
+                    e2: MotionEvent,
+                    velocityX: Float,
+                    velocityY: Float
+                ): Boolean {
+                    if (e1 == null) return false
+                    val distanceX = e2.x - e1.x
+                    val distanceY = e2.y - e1.y
+                    if (abs(distanceX) < minDistance ||
+                        abs(distanceX) <= abs(distanceY) ||
+                        abs(velocityX) < minVelocity
+                    ) {
+                        return false
+                    }
+                    return switchGroupMember(if (distanceX < 0) 1 else -1)
+                }
+            }
+        )
+        toolbar.setOnTouchListener { _, event -> detector.onTouchEvent(event) }
+    }
+
+    /** 切换同组相邻成员；到达首尾时不循环。 */
+    private fun switchGroupMember(offset: Int): Boolean {
+        if (groupId <= 0) return false
+        val members = dbHelper.queryMembers(groupId)
+        val currentIndex = members.indexOfFirst { it.code == code }
+        if (currentIndex < 0) return false
+        val target = members.getOrNull(currentIndex + offset) ?: return false
+
+        code = target.code
+        name = target.name
+        updateToolbarTitle()
+        reload(anchorTs = null, count = null)
+        return true
+    }
+
+    private fun updateToolbarTitle() {
+        toolbar.title = name
+        toolbar.subtitle = code
     }
 
     /** 右上角周期下拉；选中与当前一致时跳过（也挡掉首次布局的自动回调）。 */
@@ -120,69 +192,132 @@ class KLineActivity : AppCompatActivity() {
         }
     }
 
-    /** 按当前周期后台加载 K 线并刷新图表；[anchorTs]/[count] 用于旋转恢复。 */
+    /** 按当前周期后台加载 K 线并刷新图表；[anchorTs]/[count] 用于旋转恢复。
+     *
+     * 容错：数据源连接报错（或 DB 读取异常）一律回落存量数据展示——
+     * 同步失败仅提示（[ensureSynced] 内部消化），读库失败降级为空列表，
+     * 后台任务整体兜底捕获，任何异常都不会让页面停留在"同步中…"。
+     */
     private fun reload(anchorTs: Long?, count: Float?) {
         val seq = ++loadSeq
         val period = periodIndex
-        if (!synced) {
+        val memberCode = code
+        val memberName = name
+        if (memberCode !in syncedCodes) {
             // 首次进入：先展示同步提示，后台同步完成后再读库绘图
             emptyView.text = getString(R.string.kline_syncing)
             emptyView.visibility = View.VISIBLE
         }
         executor.execute {
-            ensureSynced()
-            val bars = try {
-                loadBars(period)
-            } catch (e: IOException) {
+            if (seq != loadSeq) return@execute
+            try {
+                ensureSynced(memberCode, memberName)
+                val bars = try {
+                    loadBars(period, memberCode)
+                } catch (e: Exception) {
+                    AppLog.netError("读库失败，按无数据展示: code=$memberCode period=$period", e)
+                    emptyList()
+                }
+                // 缠论：本级别笔与中枢；次级别中枢（日线←30m、30m←5m、周线←日线，5m 无更低级别）
+                val chan = Chan.analyze(bars)
+                val subZs = try {
+                    loadSubBars(period, memberCode)?.let { Chan.analyze(it).zhongshu }
+                } catch (e: Exception) {
+                    AppLog.netError("次级别读库失败，跳过次级别中枢: code=$memberCode period=$period", e)
+                    null
+                }
+                mainHandler.post {
+                    if (seq != loadSeq || isDestroyed) return@post
+                    chart.intraday = period == PERIOD_5M || period == PERIOD_30M || period == PERIOD_60M
+                    chart.setData(bars, count ?: defaultCount(), anchorTs)
+                    chart.setChanOverlay(chan.bi, chan.zhongshu, subZs)
+                    emptyView.text = getString(R.string.kline_empty)
+                    emptyView.visibility = if (bars.isEmpty()) View.VISIBLE else View.GONE
+                }
+            } catch (e: Exception) {
+                // 兜底：后台任务不得异常中止，否则页面会永远停留在"同步中…"
+                AppLog.netError("K线加载流程异常: code=$memberCode period=$period", e)
                 mainHandler.post {
                     if (seq == loadSeq && !isDestroyed) {
-                        Toast.makeText(this, R.string.kline_load_failed, Toast.LENGTH_SHORT).show()
+                        emptyView.text = getString(R.string.kline_empty)
+                        emptyView.visibility = View.VISIBLE
                     }
                 }
-                return@execute
-            }
-            mainHandler.post {
-                if (seq != loadSeq || isDestroyed) return@post
-                chart.intraday = period == PERIOD_5M || period == PERIOD_30M
-                chart.setData(bars, count ?: defaultCount(), anchorTs)
-                emptyView.text = getString(R.string.kline_empty)
-                emptyView.visibility = if (bars.isEmpty()) View.VISIBLE else View.GONE
             }
         }
     }
 
-    /** 页面生命周期内只同步一次；同步失败仅提示，随后继续展示本地数据。 */
-    private fun ensureSynced() {
-        if (synced) return
-        synced = true
+    /** 页面生命周期内只同步一次；同步失败仅提示，随后继续展示本地数据。
+     *
+     * 捕获放宽到 [Exception]：数据源不可达（IOException）之外，服务端异常响应、
+     * JSON/DB 运行期错误等同样不得阻断后续的本地读库绘图。
+     */
+    private fun ensureSynced(memberCode: String, memberName: String) {
+        synchronized(syncedCodes) {
+            if (!syncedCodes.add(memberCode)) return
+        }
         // 兜底登记：确保服务端已跟踪该股（幂等；新股会触发服务端后台全量回填，
         // 首次打开可能尚无数据，稍后重开即有。种子库预置股也经此自动登记。）
         try {
-            DatasourceApi.registerStock(applicationContext, code, name)
-        } catch (e: IOException) {
-            AppLog.netError("服务端登记失败（不影响本次读库）: code=$code", e)
+            DatasourceApi.registerMember(
+                applicationContext,
+                memberCode,
+                memberName,
+                groupId.takeIf { it > 0 },
+                groupName
+            )
+        } catch (e: Exception) {
+            AppLog.netError("服务端登记失败（不影响本次读库）: code=$memberCode", e)
         }
+        var historyOk = false
         try {
-            KLineSync.syncStock(applicationContext, dbHelper, code)
-        } catch (e: IOException) {
-            AppLog.netError("K线同步失败，回落本地数据: code=$code", e)
+            KLineSync.syncMember(
+                applicationContext,
+                dbHelper,
+                memberCode,
+                fallbackOn5mTimeout = true
+            )
+            historyOk = true
+        } catch (e: Exception) {
+            AppLog.netError("K线同步失败，回落本地数据: code=$memberCode", e)
             mainHandler.post {
                 if (!isDestroyed) {
                     Toast.makeText(this, R.string.kline_sync_failed, Toast.LENGTH_SHORT).show()
                 }
             }
         }
+        // 当日实时补齐：仅在历史同步成功入库后执行（尽力而为，实时失败不影响展示）。
+        // 历史接口定稿前补不到当日 bar，改走实时接口；历史全部失败（数据源不可达）时
+        // 实时接口同属一个数据源，不再发无谓请求。
+        if (historyOk) {
+            try {
+                KLineSync.syncRealtime(applicationContext, dbHelper, memberCode)
+            } catch (e: Exception) {
+                AppLog.netError("实时补齐异常（展示历史数据）: code=$memberCode", e)
+            }
+        }
     }
 
-    private fun loadBars(period: Int): List<KBar> =
+    private fun loadBars(period: Int, memberCode: String): List<KBar> =
         when (period) {
-            PERIOD_5M -> dbHelper.queryKBars(DbHelper.TABLE_K_5M, code, LIMIT_5M)
-            PERIOD_30M -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, code, LIMIT_30M)
-            PERIOD_DAY -> dbHelper.queryKBars(DbHelper.TABLE_K_DAY, code)
-            else -> KLineSynth.toWeekly(dbHelper.queryKBars(DbHelper.TABLE_K_DAY, code))
+            PERIOD_5M -> dbHelper.queryKBars(DbHelper.TABLE_K_5M, memberCode, LIMIT_5M)
+            PERIOD_30M -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, memberCode, LIMIT_30M)
+            PERIOD_60M -> dbHelper.queryKBars(DbHelper.TABLE_K_60M, memberCode, LIMIT_60M)
+            PERIOD_DAY -> dbHelper.queryKBars(DbHelper.TABLE_K_DAY, memberCode)
+            else -> KLineSynth.toWeekly(dbHelper.queryKBars(DbHelper.TABLE_K_DAY, memberCode))
         }
 
-    /** 竖屏 50 根、横屏 100 根。 */
+    /** 次级别 K 线（用于叠加次级别中枢）；5 分钟无更低级别返回 null。 */
+    private fun loadSubBars(period: Int, memberCode: String): List<KBar>? =
+        when (period) {
+            PERIOD_30M -> dbHelper.queryKBars(DbHelper.TABLE_K_5M, memberCode, LIMIT_5M)
+            PERIOD_60M -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, memberCode, LIMIT_30M)
+            PERIOD_DAY -> dbHelper.queryKBars(DbHelper.TABLE_K_30M, memberCode, LIMIT_30M)
+            PERIOD_WEEK -> dbHelper.queryKBars(DbHelper.TABLE_K_DAY, memberCode)
+            else -> null
+        }
+
+    /** 竖屏 200 根、横屏 500 根。 */
     private fun defaultCount(): Float =
         if (resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT) {
             KLineChartView.DEFAULT_PORTRAIT_COUNT
@@ -193,8 +328,10 @@ class KLineActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putInt(KEY_PERIOD, periodIndex)
+        outState.putString(KEY_CODE, code)
+        outState.putString(KEY_NAME, name)
         outState.putFloat(KEY_COUNT, chart.visibleCount)
-        outState.putBoolean(KEY_SYNCED, synced)
+        outState.putBoolean(KEY_SYNCED, code in syncedCodes)
         chart.rightEdgeTimestamp()?.let { outState.putLong(KEY_ANCHOR, it) }
     }
 
@@ -207,16 +344,21 @@ class KLineActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_CODE = "extra_code"
         const val EXTRA_NAME = "extra_name"
+        const val EXTRA_GROUP_ID = "extra_group_id"
+        const val EXTRA_GROUP_NAME = "extra_group_name"
 
         private const val KEY_PERIOD = "key_period"
+        private const val KEY_CODE = "key_code"
+        private const val KEY_NAME = "key_name"
         private const val KEY_COUNT = "key_count"
         private const val KEY_ANCHOR = "key_anchor"
         private const val KEY_SYNCED = "key_synced"
 
         private const val PERIOD_5M = 0
         private const val PERIOD_30M = 1
-        private const val PERIOD_DAY = 2
-        private const val PERIOD_WEEK = 3
+        private const val PERIOD_60M = 2
+        private const val PERIOD_DAY = 3
+        private const val PERIOD_WEEK = 4
 
         /** 5 分钟读库上限（两年约 2.3 万根，与 KLineSync.FIRST_5M 对齐）。 */
         private const val LIMIT_5M = KLineSync.FIRST_5M
@@ -224,9 +366,20 @@ class KLineActivity : AppCompatActivity() {
         /** 30 分钟读库上限（两年约 3900 根，与 KLineSync.FIRST_30M 对齐）。 */
         private const val LIMIT_30M = KLineSync.FIRST_30M
 
-        fun intent(activity: android.content.Context, code: String, name: String): Intent =
+        /** 60 分钟读库上限（五年约 4800 根，与 KLineSync.FIRST_60M 对齐）。 */
+        private const val LIMIT_60M = KLineSync.FIRST_60M
+
+        fun intent(
+            activity: android.content.Context,
+            code: String,
+            name: String,
+            groupId: Long,
+            groupName: String
+        ): Intent =
             Intent(activity, KLineActivity::class.java)
                 .putExtra(EXTRA_CODE, code)
                 .putExtra(EXTRA_NAME, name)
+                .putExtra(EXTRA_GROUP_ID, groupId)
+                .putExtra(EXTRA_GROUP_NAME, groupName)
     }
 }

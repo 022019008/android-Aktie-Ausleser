@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- 同步按钮底色 + 点击波纹 -->
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="@color/stock_sync" />
-    <item android:drawable="?attr/selectableItemBackground" />
-</layer-list>

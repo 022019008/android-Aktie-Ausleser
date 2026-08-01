@@ -27,13 +27,13 @@ class DbHelper(context: Context) :
     override fun onCreate(db: SQLiteDatabase) {
         AppLog.db("onCreate: 新建库 $DB_NAME v$DB_VERSION（分组表/自选表/K线表）")
         createGroupTable(db)
-        createStockTable(db)
+        createMemberTable(db)
         createKTables(db, K_TABLES)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         AppLog.db("onUpgrade: $DB_NAME 版本升级 v$oldVersion -> v$newVersion")
-        if (oldVersion < 2) createStockTable(db)
+        if (oldVersion < 2) createMemberTable(db)
         if (oldVersion < 3) createKTables(db, listOf(TABLE_K_5M, TABLE_K_DAY))
         if (oldVersion < 4) {
             // v4：新增 30 分钟表；K 线一律改由 app 运行时网络同步（前复权），
@@ -43,6 +43,25 @@ class DbHelper(context: Context) :
                 db.execSQL("DELETE FROM $table")
             }
             AppLog.db("onUpgrade: 已清空种子库遗留 K 线（bfq 作废，改由网络同步 qfq）")
+        }
+        if (oldVersion < 5) {
+            // v5：新增 60 分钟表（数据源 freq=60m，服务端五年窗口），由 KLineSync 运行时同步
+            createKTables(db, listOf(TABLE_K_60M))
+        }
+        if (oldVersion < 6) {
+            // v6：K 线表增加 is_realtime 标记列（0=历史定稿 / 1=盘中实时）。
+            // 既有行默认 0；实时补齐写 1、历史同步按主键覆盖时整行替换回 0，
+            // 复权检测重叠区只取历史行（见 [queryKBarsSince]）
+            for (table in K_TABLES) {
+                db.execSQL(
+                    "ALTER TABLE $table ADD COLUMN $COL_IS_REALTIME INTEGER NOT NULL DEFAULT 0"
+                )
+            }
+            AppLog.db("onUpgrade: K 线表已增加 $COL_IS_REALTIME 列（v6）")
+        }
+        if (oldVersion < 7) {
+            db.execSQL("ALTER TABLE t_selber_select_stock RENAME TO $TABLE_SELECT_MEMBER")
+            AppLog.db("onUpgrade: 自选成员表已重命名为 $TABLE_SELECT_MEMBER（v7）")
         }
     }
 
@@ -57,10 +76,10 @@ class DbHelper(context: Context) :
         )
     }
 
-    private fun createStockTable(db: SQLiteDatabase) {
+    private fun createMemberTable(db: SQLiteDatabase) {
         db.execSQL(
             """
-            CREATE TABLE IF NOT EXISTS $TABLE_SELECT_STOCK (
+            CREATE TABLE IF NOT EXISTS $TABLE_SELECT_MEMBER (
                 $COLUMN_ID    INTEGER PRIMARY KEY AUTOINCREMENT,
                 $COL_GROUP_ID INTEGER NOT NULL,
                 $COL_CODE     TEXT NOT NULL,
@@ -72,21 +91,25 @@ class DbHelper(context: Context) :
         )
     }
 
-    /** 创建 K 线表（timestamp 为 Unix 秒，adjust 存复权类型：种子库时代为 'bfq'，v4 起应用同步写入 'qfq'）。 */
+    /**
+     * 创建 K 线表（timestamp 为 Unix 秒，adjust 存复权类型：种子库时代为 'bfq'，v4 起应用同步写入 'qfq'；
+     * is_realtime 标记行来源：0=历史定稿 / 1=盘中实时，v6 起由 [upsertKBars] 写入）。
+     */
     private fun createKTables(db: SQLiteDatabase, tables: List<String>) {
         for (table in tables) {
             db.execSQL(
                 """
                 CREATE TABLE IF NOT EXISTS $table (
-                    $COL_CODE      TEXT NOT NULL,
-                    $COL_TIMESTAMP INTEGER NOT NULL,
-                    $COL_OPEN      REAL NOT NULL,
-                    $COL_HIGH      REAL NOT NULL,
-                    $COL_LOW       REAL NOT NULL,
-                    $COL_CLOSE     REAL NOT NULL,
-                    $COL_VOLUME    REAL NOT NULL,
-                    $COL_AMOUNT    REAL NOT NULL,
-                    $COL_ADJUST    TEXT NOT NULL,
+                    $COL_CODE        TEXT NOT NULL,
+                    $COL_TIMESTAMP   INTEGER NOT NULL,
+                    $COL_OPEN        REAL NOT NULL,
+                    $COL_HIGH        REAL NOT NULL,
+                    $COL_LOW         REAL NOT NULL,
+                    $COL_CLOSE       REAL NOT NULL,
+                    $COL_VOLUME      REAL NOT NULL,
+                    $COL_AMOUNT      REAL NOT NULL,
+                    $COL_ADJUST      TEXT NOT NULL,
+                    $COL_IS_REALTIME INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY($COL_CODE, $COL_TIMESTAMP)
                 )
                 """.trimIndent()
@@ -156,12 +179,12 @@ class DbHelper(context: Context) :
         return rows
     }
 
-    /** 查询指定分组下全部自选股票（按加入时间升序）。 */
-    fun queryStocks(groupId: Long): List<SelectStock> {
+    /** 查询指定分组下全部自选成员（按加入时间升序）。 */
+    fun queryMembers(groupId: Long): List<SelectMember> {
         val start = SystemClock.elapsedRealtime()
-        val list = mutableListOf<SelectStock>()
+        val list = mutableListOf<SelectMember>()
         readableDatabase.query(
-            TABLE_SELECT_STOCK,
+            TABLE_SELECT_MEMBER,
             arrayOf(COLUMN_ID, COL_GROUP_ID, COL_CODE, COLUMN_NAME),
             "$COL_GROUP_ID=?",
             arrayOf(groupId.toString()),
@@ -174,7 +197,7 @@ class DbHelper(context: Context) :
             val nameIndex = cursor.getColumnIndexOrThrow(COLUMN_NAME)
             while (cursor.moveToNext()) {
                 list.add(
-                    SelectStock(
+                    SelectMember(
                         id = cursor.getLong(idIndex),
                         groupId = cursor.getLong(gidIndex),
                         code = cursor.getString(codeIndex),
@@ -183,21 +206,21 @@ class DbHelper(context: Context) :
                 )
             }
         }
-        AppLog.db("queryStocks(groupId=$groupId) -> ${list.size} 只股票，耗时 ${SystemClock.elapsedRealtime() - start}ms")
+        AppLog.db("queryMembers(groupId=$groupId) -> ${list.size} 个成员，耗时 ${SystemClock.elapsedRealtime() - start}ms")
         return list
     }
 
-    /** 查询指定分组已包含的股票代码集合（用于搜索弹层标记“已添加”）。 */
-    fun queryStockCodes(groupId: Long): Set<String> {
-        val codes = queryStocks(groupId).map { it.code }.toSet()
-        AppLog.db("queryStockCodes(groupId=$groupId) -> ${codes.size} 个代码")
+    /** 查询指定分组已包含的成员代码集合（用于搜索弹层标记“已添加”）。 */
+    fun queryMemberCodes(groupId: Long): Set<String> {
+        val codes = queryMembers(groupId).map { it.code }.toSet()
+        AppLog.db("queryMemberCodes(groupId=$groupId) -> ${codes.size} 个代码")
         return codes
     }
 
-    /** 将股票加入指定分组；同组同代码已存在时忽略，返回 -1。 */
-    fun insertStock(groupId: Long, code: String, name: String): Long {
+    /** 将成员加入指定分组；同组同代码已存在时忽略，返回 -1。 */
+    fun insertMember(groupId: Long, code: String, name: String): Long {
         val rowId = writableDatabase.insertWithOnConflict(
-            TABLE_SELECT_STOCK,
+            TABLE_SELECT_MEMBER,
             null,
             ContentValues().apply {
                 put(COL_GROUP_ID, groupId)
@@ -208,27 +231,27 @@ class DbHelper(context: Context) :
             SQLiteDatabase.CONFLICT_IGNORE
         )
         AppLog.db(
-            "insertStock(groupId=$groupId, code=$code, name=$name) -> " +
+            "insertMember(groupId=$groupId, code=$code, name=$name) -> " +
                 if (rowId == -1L) "忽略（同组同代码已存在）" else "rowId=$rowId"
         )
         return rowId
     }
 
-    /** 从自选移除指定股票行。 */
-    fun deleteStock(id: Long): Int {
+    /** 从自选移除指定成员行。 */
+    fun deleteMember(id: Long): Int {
         val rows = writableDatabase.delete(
-            TABLE_SELECT_STOCK,
+            TABLE_SELECT_MEMBER,
             "$COLUMN_ID=?",
             arrayOf(id.toString())
         )
-        AppLog.db("deleteStock(id=$id) -> 影响 $rows 行")
+        AppLog.db("deleteMember(id=$id) -> 影响 $rows 行")
         return rows
     }
 
     /** 该代码在全部分组中占用的行数（删股时判断是否仍被其他分组引用）。 */
-    fun countStocksByCode(code: String): Int {
+    fun countMembersByCode(code: String): Int {
         readableDatabase.rawQuery(
-            "SELECT COUNT(*) FROM $TABLE_SELECT_STOCK WHERE $COL_CODE=?",
+            "SELECT COUNT(*) FROM $TABLE_SELECT_MEMBER WHERE $COL_CODE=?",
             arrayOf(code)
         ).use { cursor ->
             return if (cursor.moveToFirst()) cursor.getInt(0) else 0
@@ -238,8 +261,8 @@ class DbHelper(context: Context) :
     /**
      * 查询指定代码的 K 线（按时间升序，最多取最新 [limit] 条）。
      *
-     * 注：三张 K 线表（[TABLE_K_5M] / [TABLE_K_30M] / [TABLE_K_DAY]）均由
-     * [KLineSync] 在打开 K 线页时从网络同步（前复权，adjust='qfq'）。
+     * 注：四张 K 线表（[TABLE_K_5M] / [TABLE_K_30M] / [TABLE_K_60M] / [TABLE_K_DAY]）
+     * 均由 [KLineSync] 在打开 K 线页时从网络同步（前复权，adjust='qfq'）。
      */
     fun queryKBars(table: String, code: String, limit: Int = MAX_K_BARS): List<KBar> {
         requireKTable(table)
@@ -259,7 +282,11 @@ class DbHelper(context: Context) :
         return out
     }
 
-    /** 查询指定代码自 [sinceTs]（含）起的 K 线（按时间升序），供同步时取重叠区做复权检测。 */
+    /**
+     * 查询指定代码自 [sinceTs]（含）起的 K 线（按时间升序），供同步时取重叠区做复权检测。
+     * 只返回历史定稿行（is_realtime=0）：盘中实时行来自东财，其前复权基准与库存
+     * （baostock/akshare）可能存在细微差异，参与比对会误判除权除息，故复权检测排除实时行。
+     */
     fun queryKBarsSince(table: String, code: String, sinceTs: Long): List<KBar> {
         requireKTable(table)
         val start = SystemClock.elapsedRealtime()
@@ -267,7 +294,7 @@ class DbHelper(context: Context) :
         readableDatabase.query(
             table,
             K_BAR_COLUMNS,
-            "$COL_CODE=? AND $COL_TIMESTAMP>=?",
+            "$COL_CODE=? AND $COL_TIMESTAMP>=? AND $COL_IS_REALTIME=0",
             arrayOf(code, sinceTs.toString()),
             null, null,
             "$COL_TIMESTAMP ASC",
@@ -298,6 +325,33 @@ class DbHelper(context: Context) :
         return summary
     }
 
+    /**
+     * 统计指定代码在某 K 线表的**历史定稿行**存量（is_realtime=0）；无历史行返回全 0 摘要。
+     * 同步的全量/增量决策必须以此为准：仅存实时行（新股首登竞态：服务端回填未完成时
+     * 历史拉取返回空、实时行先入库）不算有存量，否则增量路径只带重叠下限根数，
+     * 历史深度永远长不回去。
+     */
+    fun kBarSummaryHistory(table: String, code: String): KBarSummary {
+        requireKTable(table)
+        val start = SystemClock.elapsedRealtime()
+        var summary = KBarSummary(0, 0L, 0L)
+        readableDatabase.rawQuery(
+            "SELECT COUNT(*), MIN($COL_TIMESTAMP), MAX($COL_TIMESTAMP) FROM $table " +
+                "WHERE $COL_CODE=? AND $COL_IS_REALTIME=0",
+            arrayOf(code)
+        ).use { cursor ->
+            if (cursor.moveToFirst()) {
+                summary = KBarSummary(
+                    count = cursor.getInt(0),
+                    minTimestamp = if (cursor.isNull(1)) 0L else cursor.getLong(1),
+                    maxTimestamp = if (cursor.isNull(2)) 0L else cursor.getLong(2)
+                )
+            }
+        }
+        AppLog.db("kBarSummaryHistory(table=$table, code=$code) -> $summary，耗时 ${SystemClock.elapsedRealtime() - start}ms")
+        return summary
+    }
+
     /** 指定代码在某 K 线表是否存在非前复权（adjust<>'qfq'）行（种子库 bfq 遗留）。 */
     fun hasNonQfqBars(table: String, code: String): Boolean {
         requireKTable(table)
@@ -322,10 +376,18 @@ class DbHelper(context: Context) :
     }
 
     /**
-     * 批量写入 K 线（单事务，INSERT OR REPLACE 幂等可重跑），[adjust] 记录复权类型。
-     * 返回写入条数（空列表返回 0）。
+     * 批量写入 K 线（单事务，INSERT OR REPLACE 幂等可重跑），[adjust] 记录复权类型，
+     * [isRealtime] 标记行来源（true=盘中实时 / false=历史定稿，缺省历史）。
+     * INSERT OR REPLACE 整行替换：历史同步拿到当天数据时会把同主键的实时行
+     * 连标记一并覆盖为历史（is_realtime 归 0）。返回写入条数（空列表返回 0）。
      */
-    fun upsertKBars(table: String, code: String, bars: List<KBar>, adjust: String): Int {
+    fun upsertKBars(
+        table: String,
+        code: String,
+        bars: List<KBar>,
+        adjust: String,
+        isRealtime: Boolean = false
+    ): Int {
         requireKTable(table)
         if (bars.isEmpty()) return 0
         val start = SystemClock.elapsedRealtime()
@@ -347,6 +409,7 @@ class DbHelper(context: Context) :
                         put(COL_VOLUME, bar.volume)
                         put(COL_AMOUNT, bar.amount)
                         put(COL_ADJUST, adjust)
+                        put(COL_IS_REALTIME, if (isRealtime) 1 else 0)
                     },
                     SQLiteDatabase.CONFLICT_REPLACE
                 )
@@ -356,7 +419,7 @@ class DbHelper(context: Context) :
         } finally {
             db.endTransaction()
         }
-        AppLog.db("upsertKBars(table=$table, code=$code, bars=${bars.size}, adjust=$adjust) -> 写入 $written 条，耗时 ${SystemClock.elapsedRealtime() - start}ms")
+        AppLog.db("upsertKBars(table=$table, code=$code, bars=${bars.size}, adjust=$adjust, isRealtime=$isRealtime) -> 写入 $written 条，耗时 ${SystemClock.elapsedRealtime() - start}ms")
         return written
     }
 
@@ -391,7 +454,7 @@ class DbHelper(context: Context) :
 
     companion object {
         const val DB_NAME = "ausleser.db"
-        const val DB_VERSION = 4
+        const val DB_VERSION = 7
 
         /** 单次 K 线查询上限（2 年 5 分钟约 2.3 万根，留有余量）。 */
         const val MAX_K_BARS = 25_000
@@ -400,13 +463,14 @@ class DbHelper(context: Context) :
         private const val ASSET_DB_PATH = "databases/$DB_NAME"
 
         const val TABLE_SELECT_GROUP = "t_selber_select_group"
-        const val TABLE_SELECT_STOCK = "t_selber_select_stock"
+        const val TABLE_SELECT_MEMBER = "t_selber_select_member"
         const val TABLE_K_5M = "t_k_5m"
         const val TABLE_K_30M = "t_k_30m"
+        const val TABLE_K_60M = "t_k_60m"
         const val TABLE_K_DAY = "t_k_day"
 
         /** 全部 K 线表（schema 相同）。 */
-        private val K_TABLES = listOf(TABLE_K_5M, TABLE_K_30M, TABLE_K_DAY)
+        private val K_TABLES = listOf(TABLE_K_5M, TABLE_K_30M, TABLE_K_60M, TABLE_K_DAY)
 
         /** K 线查询投影列（顺序须与 [readBars] 的取列逻辑一致）。 */
         private val K_BAR_COLUMNS =
@@ -425,6 +489,7 @@ class DbHelper(context: Context) :
         const val COL_VOLUME = "volume"
         const val COL_AMOUNT = "amount"
         const val COL_ADJUST = "adjust"
+        const val COL_IS_REALTIME = "is_realtime"
 
         /**
          * 首次启动时将 assets 打包的预置种子库安装到内部存储（仅当库文件尚不存在时）。

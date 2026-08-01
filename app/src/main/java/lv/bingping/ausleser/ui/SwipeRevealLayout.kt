@@ -36,6 +36,8 @@ class SwipeRevealLayout @JvmOverloads constructor(
 
     fun currentOffset(): Float = content?.translationX ?: 0f
 
+    fun isClosed(): Boolean = currentOffset() == 0f
+
     override fun onMeasure(widthSpec: Int, heightSpec: Int) {
         val c = content
         if (c == null) {

@@ -18,8 +18,15 @@ class SwipeRevealCallback : ItemTouchHelper.Callback() {
 
     private var dragStartOffset = 0f
 
-    override fun getMovementFlags(rv: RecyclerView, vh: RecyclerView.ViewHolder): Int =
-        makeMovementFlags(0, ItemTouchHelper.LEFT)
+    override fun getMovementFlags(rv: RecyclerView, vh: RecyclerView.ViewHolder): Int {
+        val row = vh.itemView as? SwipeRevealLayout
+        val directions = if (row?.isClosed() == false) {
+            ItemTouchHelper.LEFT or ItemTouchHelper.RIGHT
+        } else {
+            ItemTouchHelper.LEFT
+        }
+        return makeMovementFlags(0, directions)
+    }
 
     override fun onMove(rv: RecyclerView, vh: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder) = false
 

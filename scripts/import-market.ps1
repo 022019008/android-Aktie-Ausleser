@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
   将 market.db 的数据一次性导入模拟器上 app 的数据库（ausleser.db）。
-  - t_eft  -> 自选表 t_selber_select_stock 的 “ETF” 分组（code+name）
+  - t_eft  -> 成员表 t_selber_select_member 的 “ETF” 分组（code+name）
   - t_k_5m -> t_k_5m；t_k_day -> t_k_day
   采用 pull -> ATTACH+INSERT -> push 方式，使用 app 自身连接之外的主机 sqlite3 操作；
   操作前备份原库，操作后在设备上二次校验行数。幂等（INSERT OR IGNORE）。
@@ -40,7 +40,7 @@ Write-Host ("      pulled {0} bytes (backup -> {1})" -f (Get-Item $localDb).Leng
 
 Write-Host "[2/6] verify schema ..."
 $tables = (Sql $localDb '.tables') -join ' '
-foreach ($t in 't_selber_select_group','t_selber_select_stock','t_k_5m','t_k_day') {
+foreach ($t in 't_selber_select_group','t_selber_select_member','t_k_5m','t_k_day') {
     if ($tables -notmatch "\b$t\b") { throw "pulled db missing table $t (run the app once to migrate first)" }
 }
 
@@ -51,7 +51,7 @@ PRAGMA synchronous=OFF;
 PRAGMA temp_store=MEMORY;
 ATTACH '$mdb' AS m;
 BEGIN;
-INSERT OR IGNORE INTO t_selber_select_stock(group_id, code, name, added_at)
+INSERT OR IGNORE INTO t_selber_select_member(group_id, code, name, added_at)
   SELECT (SELECT id FROM t_selber_select_group WHERE name='ETF'), code, name, CAST(strftime('%s','now') AS INTEGER)
   FROM m.t_eft;
 INSERT OR IGNORE INTO t_k_5m(code,timestamp,open,high,low,close,volume,amount,adjust)
@@ -65,10 +65,10 @@ $import | & $Sqlite $localDb 2>&1 | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "import SQL failed" }
 
 Write-Host "[4/6] verify counts on modified file ..."
-$cEtf = (Sql $localDb "SELECT count(*) FROM t_selber_select_stock WHERE group_id=(SELECT id FROM t_selber_select_group WHERE name='ETF');") | Select-Object -First 1
+$cEtf = (Sql $localDb "SELECT count(*) FROM t_selber_select_member WHERE group_id=(SELECT id FROM t_selber_select_group WHERE name='ETF');") | Select-Object -First 1
 $c5   = (Sql $localDb "SELECT count(*) FROM t_k_5m;") | Select-Object -First 1
 $cD   = (Sql $localDb "SELECT count(*) FROM t_k_day;") | Select-Object -First 1
-Write-Host ("      ETF stocks={0}  t_k_5m={1}  t_k_day={2}  (file {3} bytes)" -f $cEtf, $c5, $cD, (Get-Item $localDb).Length)
+Write-Host ("      ETF members={0}  t_k_5m={1}  t_k_day={2}  (file {3} bytes)" -f $cEtf, $c5, $cD, (Get-Item $localDb).Length)
 if ([int]$c5 -lt 100000 -or [int]$cD -lt 10000 -or [int]$cEtf -lt 1) { throw "counts look wrong" }
 
 Write-Host "[5/6] push back into app db dir ..."
@@ -81,7 +81,7 @@ Write-Host "[5/6] push back into app db dir ..."
 Write-Host "[6/6] verify on device ..."
 $verify = Join-Path $work 'verify.db'
 PullDb $verify
-$vE = (Sql $verify "SELECT count(*) FROM t_selber_select_stock WHERE group_id=(SELECT id FROM t_selber_select_group WHERE name='ETF');") | Select-Object -First 1
+$vE = (Sql $verify "SELECT count(*) FROM t_selber_select_member WHERE group_id=(SELECT id FROM t_selber_select_group WHERE name='ETF');") | Select-Object -First 1
 $v5 = (Sql $verify "SELECT count(*) FROM t_k_5m;") | Select-Object -First 1
 $vD = (Sql $verify "SELECT count(*) FROM t_k_day;") | Select-Object -First 1
 Write-Host ("      device: ETF={0}  t_k_5m={1}  t_k_day={2}" -f $vE, $v5, $vD)

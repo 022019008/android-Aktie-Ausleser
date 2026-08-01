@@ -27,7 +27,8 @@ import lv.bingping.ausleser.data.SelectGroup
 class GroupManageBottomSheet(
     private val context: Context,
     private val dbHelper: DbHelper,
-    private val onChanged: () -> Unit
+    private val onChanged: () -> Unit,
+    private val onDeleted: (SelectGroup) -> Unit = {}
 ) {
     private val dialog = BottomSheetDialog(context)
     private val items = mutableListOf<SelectGroup>()
@@ -88,6 +89,7 @@ class GroupManageBottomSheet(
             .setMessage(context.getString(R.string.confirm_delete, group.name))
             .setPositiveButton(R.string.action_delete) { _, _ ->
                 dbHelper.deleteSelectGroup(group.id)
+                onDeleted(group)
                 reloadAndNotify()
             }
             .setNegativeButton(R.string.action_cancel, null)

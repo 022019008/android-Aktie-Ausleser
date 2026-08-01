@@ -5,6 +5,15 @@
     <string name="selber_select">自选</string>
 
     <!-- 自选分组管理 -->
+    <string name="sync_group_action">同步当前群组</string>
+    <string name="sync_group_done">群组同步完成，共 %1$d 个成员</string>
+    <string name="sync_group_partial">群组同步完成：成功 %1$d 个，失败 %2$d 个</string>
+    <string name="sync_group_cancelled">群组同步已被新任务取消</string>
+    <string name="sync_group_failed">群组同步失败或连接中断</string>
+    <string name="download_group_action">下载当前群组数据</string>
+    <string name="download_group_empty">当前群组没有成员</string>
+    <string name="download_group_done">群组数据下载完成，共 %1$d 个成员</string>
+    <string name="download_group_partial">群组数据下载完成：成功 %1$d 个，失败 %2$d 个</string>
     <string name="group_manage">群组管理</string>
     <string name="manage_groups_title">管理自选分组</string>
     <string name="add_group">添加分组</string>
@@ -15,38 +24,34 @@
     <string name="action_ok">确定</string>
     <string name="action_cancel">取消</string>
     <string name="action_delete">删除</string>
-    <string name="action_sync">同步</string>
 
-    <!-- 自选股票列表 / 搜索添加 -->
-    <string name="add_stock_action">添加自选</string>
+    <!-- 自选成员列表 / 搜索添加 -->
+    <string name="add_member_action">添加自选</string>
     <string name="action_close">关闭</string>
-    <string name="empty_stocks">暂无自选，点击右上角 + 添加</string>
+    <string name="empty_members">暂无自选，点击右上角 + 添加</string>
     <string name="quote_placeholder">--</string>
-    <string name="search_stock_hint">代码 / 名称 / 拼音首字母</string>
+    <string name="search_member_hint">代码 / 名称 / 拼音首字母</string>
     <string name="search_sub_format">%1$s　%2$s</string>
     <string name="already_added">已添加</string>
-    <string name="stock_added">已添加：%1$s</string>
-    <string name="stock_exists">该股票已在本分组</string>
-    <string name="no_search_result">无匹配股票</string>
+    <string name="member_added">已添加：%1$s</string>
+    <string name="member_exists">该成员已在本分组</string>
+    <string name="no_search_result">无匹配成员</string>
     <string name="search_failed">搜索失败，请稍后重试</string>
 
     <!-- K线图 -->
     <string name="kline_period">周期</string>
     <string name="kline_empty">暂无K线数据</string>
-    <string name="kline_load_failed">K线加载失败</string>
     <string name="kline_syncing">正在同步行情数据…</string>
     <string name="kline_sync_failed">行情同步失败，展示本地数据</string>
     <string-array name="kline_periods">
         <item>5分钟</item>
         <item>30分钟</item>
+        <item>60分钟</item>
         <item>日线</item>
         <item>周线</item>
     </string-array>
 
     <!-- 服务器设置 -->
-    <string name="sync_in_progress">正在同步：%1$s</string>
-    <string name="sync_complete">同步完成：%1$s</string>
-    <string name="sync_failed">同步失败</string>
     <string name="settings_action">服务器设置</string>
     <string name="settings_title">服务器设置</string>
     <string name="server_ip_hint">服务器 IP 地址</string>

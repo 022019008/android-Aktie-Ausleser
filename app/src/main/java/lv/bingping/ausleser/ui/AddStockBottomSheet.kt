@@ -20,8 +20,8 @@ import com.google.android.material.bottomsheet.BottomSheetDialog
 import lv.bingping.ausleser.R
 import lv.bingping.ausleser.data.DatasourceApi
 import lv.bingping.ausleser.data.DbHelper
-import lv.bingping.ausleser.data.Stock
-import lv.bingping.ausleser.data.StockSearchApi
+import lv.bingping.ausleser.data.Member
+import lv.bingping.ausleser.data.MemberSearchApi
 import lv.bingping.ausleser.util.AppLog
 import java.io.IOException
 import java.util.concurrent.Executors
@@ -30,19 +30,19 @@ import java.util.concurrent.Executors
  * “添加自选”搜索弹层：点击候选项即加入当前分组（[groupId]），
  * 并通过 [onAdded] 通知外部刷新列表。
  *
- * 候选数据来自东方财富联想接口（[StockSearchApi]）：输入防抖 [SEARCH_DEBOUNCE_MS]
+ * 候选数据来自东方财富联想接口（[MemberSearchApi]）：输入防抖 [SEARCH_DEBOUNCE_MS]
  * 后按 [shouldSearch] 阈值触发后台搜索，过期响应按请求序号丢弃。
  */
-class AddStockBottomSheet(
+class AddMemberBottomSheet(
     private val context: Context,
     private val dbHelper: DbHelper,
     private val groupId: Long,
     private val onAdded: () -> Unit
 ) {
     private val dialog = BottomSheetDialog(context)
-    private val existing = dbHelper.queryStockCodes(groupId).toMutableSet()
-    private val results = mutableListOf<Stock>()
-    private lateinit var adapter: StockSearchAdapter
+    private val existing = dbHelper.queryMemberCodes(groupId).toMutableSet()
+    private val results = mutableListOf<Member>()
+    private lateinit var adapter: MemberSearchAdapter
     private lateinit var emptyView: TextView
 
     /** 搜索用单线程池；弹层关闭时 shutdown。 */
@@ -53,12 +53,12 @@ class AddStockBottomSheet(
     private var requestSeq = 0
 
     fun show() {
-        val view = LayoutInflater.from(context).inflate(R.layout.dialog_add_stock, null)
+        val view = LayoutInflater.from(context).inflate(R.layout.dialog_add_member, null)
         val editText = view.findViewById<EditText>(R.id.et_search)
         val recyclerView = view.findViewById<RecyclerView>(R.id.rv_search)
         emptyView = view.findViewById(R.id.tv_search_empty)
 
-        adapter = StockSearchAdapter(
+        adapter = MemberSearchAdapter(
             data = results,
             isAdded = { code -> existing.contains(code) },
             onPick = ::pick
@@ -119,7 +119,7 @@ class AddStockBottomSheet(
         val seq = ++requestSeq
         executor.execute {
             val list = try {
-                StockSearchApi.search(query)
+                MemberSearchApi.search(query)
             } catch (e: IOException) {
                 mainHandler.post {
                     if (seq == requestSeq && !executor.isShutdown) {
@@ -136,7 +136,7 @@ class AddStockBottomSheet(
     }
 
     /** 用搜索结果替换候选列表并切换空态。 */
-    private fun showResults(list: List<Stock>) {
+    private fun showResults(list: List<Member>) {
         results.clear()
         results.addAll(list)
         adapter.notifyDataSetChanged()
@@ -159,28 +159,36 @@ class AddStockBottomSheet(
         }
     }
 
-    private fun pick(stock: Stock) {
-        if (!existing.add(stock.code)) {
-            Toast.makeText(context, R.string.stock_exists, Toast.LENGTH_SHORT).show()
+    private fun pick(member: Member) {
+        if (!existing.add(member.code)) {
+            Toast.makeText(context, R.string.member_exists, Toast.LENGTH_SHORT).show()
             return
         }
-        val rowId = dbHelper.insertStock(groupId, stock.code, stock.name)
+        val rowId = dbHelper.insertMember(groupId, member.code, member.name)
         if (rowId >= 0L) {
-            Toast.makeText(context, context.getString(R.string.stock_added, stock.name), Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.member_added, member.name), Toast.LENGTH_SHORT).show()
             onAdded()
             // 通知服务端数据源开始跟踪该股（新股触发后台全量回填；幂等，失败不影响本地添加）
             executor.execute {
                 try {
-                    DatasourceApi.registerStock(context, stock.code, stock.name)
+                    val groupName = dbHelper.querySelectGroups()
+                        .firstOrNull { it.id == groupId }?.name.orEmpty()
+                    DatasourceApi.registerMember(
+                        context,
+                        member.code,
+                        member.name,
+                        groupId,
+                        groupName
+                    )
                 } catch (e: Exception) {
-                    AppLog.netError("服务端登记失败: code=${stock.code}", e)
+                    AppLog.netError("服务端登记失败: code=${member.code}", e)
                 }
             }
         } else {
-            existing.remove(stock.code)
-            Toast.makeText(context, R.string.stock_exists, Toast.LENGTH_SHORT).show()
+            existing.remove(member.code)
+            Toast.makeText(context, R.string.member_exists, Toast.LENGTH_SHORT).show()
         }
-        val pos = results.indexOf(stock)
+        val pos = results.indexOf(member)
         if (pos >= 0) adapter.notifyItemChanged(pos)
     }
 

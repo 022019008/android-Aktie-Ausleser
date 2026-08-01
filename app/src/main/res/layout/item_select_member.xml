@@ -4,7 +4,6 @@
     android:layout_width="match_parent"
     android:layout_height="wrap_content">
 
-    <!-- 内容层 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -15,7 +14,7 @@
         android:paddingVertical="12dp">
 
         <TextView
-            android:id="@+id/tv_stock_code"
+            android:id="@+id/tv_member_code"
             android:layout_width="76dp"
             android:layout_height="wrap_content"
             android:fontFamily="monospace"
@@ -23,7 +22,7 @@
             android:textSize="14sp" />
 
         <TextView
-            android:id="@+id/tv_stock_name"
+            android:id="@+id/tv_member_name"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="12dp"
@@ -34,7 +33,7 @@
             android:textSize="16sp" />
 
         <TextView
-            android:id="@+id/tv_stock_quote"
+            android:id="@+id/tv_member_quote"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:text="@string/quote_placeholder"
@@ -42,7 +41,6 @@
             android:textSize="14sp" />
     </LinearLayout>
 
-    <!-- 操作层：默认排在右边缘之外（被裁剪隐藏），左滑才出现 -->
     <LinearLayout
         android:id="@+id/row_actions"
         android:layout_width="wrap_content"
@@ -51,17 +49,7 @@
         android:orientation="horizontal">
 
         <ImageButton
-            android:id="@+id/btn_sync_stock"
-            android:layout_width="72dp"
-            android:layout_height="match_parent"
-            android:background="@drawable/bg_action_sync"
-            android:contentDescription="@string/action_sync"
-            android:scaleType="centerInside"
-            android:src="@drawable/ic_sync"
-            app:tint="@color/white" />
-
-        <ImageButton
-            android:id="@+id/btn_delete_stock"
+            android:id="@+id/btn_delete_member"
             android:layout_width="72dp"
             android:layout_height="match_parent"
             android:background="@drawable/bg_action_delete"
